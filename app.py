@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import json, os, time, psycopg, urllib.error, urllib.request
 from psycopg.rows import dict_row
 
-app=FastAPI(title='UNG-NEXUS',version='0.4.0')
+app=FastAPI(title='UNG-NEXUS',version='0.4.1')
 DB=os.getenv('DATABASE_URL','')
 JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/')
 DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'))
@@ -43,8 +43,21 @@ class MessageIn(BaseModel):
 class EnvelopeIn(MessageIn):
     message_id:str|None=None; sent_at:str|None=None
 
+@app.get('/')
+def root():
+    return {
+        'service':'UNG-NEXUS',
+        'name':'Uganda National Grid Integration & Interoperability Platform',
+        'status':'online',
+        'version':'0.4.1',
+        'health':'/health',
+        'readiness':'/ready',
+        'system':'/v1/system',
+        'docs':'/docs'
+    }
+
 @app.get('/health')
-def health(): return {'status':'ok','service':'UNG-NEXUS','version':'0.4.0'}
+def health(): return {'status':'ok','service':'UNG-NEXUS','version':'0.4.1'}
 @app.get('/ready')
 def ready():
     try:
