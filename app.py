@@ -5,23 +5,32 @@ from datetime import datetime, timezone
 import json, os, time, psycopg, urllib.error, urllib.request
 from psycopg.rows import dict_row
 
-app=FastAPI(title='UNG-NEXUS',version='0.4.1')
+app=FastAPI(title='UNG-NEXUS',version='0.4.2')
 DB=os.getenv('DATABASE_URL','')
 JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/')
 DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'))
 DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 
 def auth(permission, authorization):
-    if not authorization or not authorization.lower().startswith('bearer '): raise HTTPException(401,'JANUS bearer token required')
-    req=urllib.request.Request(JANUS_BASE_URL+'/v1/auth/introspect',data=b'',method='POST',headers={'Authorization':authorization})
+    if not authorization or not authorization.lower().startswith('bearer '):
+        raise HTTPException(401,'JANUS bearer token required')
+    req=urllib.request.Request(JANUS_BASE_URL+'/v1/me',method='GET',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4.2'})
     try:
-        with urllib.request.urlopen(req,timeout=5) as r:data=json.loads(r.read().decode())
+        with urllib.request.urlopen(req,timeout=5) as r:
+            principal=json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        if e.code in (401,403): raise HTTPException(401,'JANUS token invalid or expired')
+        if e.code in (401,403):
+            raise HTTPException(401,'JANUS token invalid or expired')
         raise HTTPException(503,'JANUS authorization unavailable')
-    except Exception: raise HTTPException(503,'JANUS authorization unavailable')
-    principal=data.get('principal') or {}; perms=set(principal.get('permissions') or [])
-    if permission not in perms and 'ung.admin' not in perms: raise HTTPException(403,f'Missing JANUS permission: {permission}')
+    except Exception:
+        raise HTTPException(503,'JANUS authorization unavailable')
+    perms=set(principal.get('permissions') or [])
+    # Until JANUS carries NEXUS-granular permissions, platform service access is the
+    # production bridge for machine-to-machine NEXUS calls. Exact NEXUS permissions
+    # remain supported and take precedence when JANUS adds them.
+    allowed=(permission in perms or 'ung.admin' in perms or 'platform:service' in perms)
+    if not allowed:
+        raise HTTPException(403,f'Missing JANUS permission: {permission}')
     return principal
 
 def conn(): return psycopg.connect(DB,row_factory=dict_row)
@@ -49,7 +58,7 @@ def root():
         'service':'UNG-NEXUS',
         'name':'Uganda National Grid Integration & Interoperability Platform',
         'status':'online',
-        'version':'0.4.1',
+        'version':'0.4.2',
         'health':'/health',
         'readiness':'/ready',
         'system':'/v1/system',
@@ -57,7 +66,7 @@ def root():
     }
 
 @app.get('/health')
-def health(): return {'status':'ok','service':'UNG-NEXUS','version':'0.4.1'}
+def health(): return {'status':'ok','service':'UNG-NEXUS','version':'0.4.2'}
 @app.get('/ready')
 def ready():
     try:
@@ -91,7 +100,7 @@ def inbound(b:EnvelopeIn,authorization:str|None=Header(None)):
 def deliver(url,envelope,authorization):
     body=json.dumps(envelope,separators=(',',':')).encode(); last_error=None; last_code=None
     for attempt in range(1,DELIVERY_RETRIES+1):
-        req=urllib.request.Request(url,data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4'})
+        req=urllib.request.Request(url,data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4.2'})
         try:
             with urllib.request.urlopen(req,timeout=DELIVERY_TIMEOUT) as r:
                 code=int(r.status)
