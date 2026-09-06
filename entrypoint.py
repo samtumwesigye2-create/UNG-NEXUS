@@ -5,6 +5,7 @@ import urllib.request
 from fastapi import HTTPException
 
 import app as nexus
+from acceptance_view import router as acceptance_router
 
 
 def janus_auth(permission, authorization):
@@ -35,3 +36,4 @@ def janus_auth(permission, authorization):
 
 nexus.auth = janus_auth
 app = nexus.app
+app.include_router(acceptance_router)
