@@ -5,31 +5,25 @@ from datetime import datetime, timezone
 import json, os, time, psycopg, urllib.error, urllib.request
 from psycopg.rows import dict_row
 
-app=FastAPI(title='UNG-NEXUS',version='0.4.2')
+app=FastAPI(title='UNG-NEXUS',version='0.4.3')
 DB=os.getenv('DATABASE_URL','')
 JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/')
+APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/')
 DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'))
 DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 
 def auth(permission, authorization):
     if not authorization or not authorization.lower().startswith('bearer '):
         raise HTTPException(401,'JANUS bearer token required')
-    req=urllib.request.Request(JANUS_BASE_URL+'/v1/me',method='GET',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4.2'})
+    req=urllib.request.Request(JANUS_BASE_URL+'/v1/auth/introspect',data=b'',method='POST',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4.3'})
     try:
-        with urllib.request.urlopen(req,timeout=5) as r:
-            principal=json.loads(r.read().decode())
+        with urllib.request.urlopen(req,timeout=5) as r:data=json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        if e.code in (401,403):
-            raise HTTPException(401,'JANUS token invalid or expired')
+        if e.code in (401,403): raise HTTPException(401,'JANUS token invalid or expired')
         raise HTTPException(503,'JANUS authorization unavailable')
-    except Exception:
-        raise HTTPException(503,'JANUS authorization unavailable')
-    perms=set(principal.get('permissions') or [])
-    # Until JANUS carries NEXUS-granular permissions, platform service access is the
-    # production bridge for machine-to-machine NEXUS calls. Exact NEXUS permissions
-    # remain supported and take precedence when JANUS adds them.
-    allowed=(permission in perms or 'ung.admin' in perms or 'platform:service' in perms)
-    if not allowed:
+    except Exception: raise HTTPException(503,'JANUS authorization unavailable')
+    principal=data.get('principal') or {}; perms=set(principal.get('permissions') or [])
+    if permission not in perms and 'ung.admin' not in perms and 'platform:service' not in perms:
         raise HTTPException(403,f'Missing JANUS permission: {permission}')
     return principal
 
@@ -44,6 +38,11 @@ def init():
             c.execute('CREATE TABLE IF NOT EXISTS nexus_messages(id UUID PRIMARY KEY,source_system TEXT,target_system TEXT,message_type TEXT,payload JSONB,status TEXT,created_at TIMESTAMPTZ)')
             for sql in ['ALTER TABLE nexus_messages ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0','ALTER TABLE nexus_messages ADD COLUMN IF NOT EXISTS response_code INTEGER','ALTER TABLE nexus_messages ADD COLUMN IF NOT EXISTS delivery_error TEXT','ALTER TABLE nexus_messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ','ALTER TABLE nexus_messages ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT \'outbound\'','ALTER TABLE nexus_messages ADD COLUMN IF NOT EXISTS principal_id TEXT']:
                 c.execute(sql)
+            if APOLLO_BASE_URL:
+                c.execute('''INSERT INTO nexus_endpoints(id,name,base_url,system_id,enabled,created_at)
+                             VALUES(%s,%s,%s,%s,true,%s)
+                             ON CONFLICT(name) DO UPDATE SET base_url=EXCLUDED.base_url,system_id=EXCLUDED.system_id,enabled=true''',
+                          (str(uuid4()),'UNG-APOLLO',APOLLO_BASE_URL+'/v1/nexus/inbound','UNG-APOLLO',utcnow()))
 
 class EndpointIn(BaseModel):
     name:str; base_url:HttpUrl; system_id:str; enabled:bool=True
@@ -54,27 +53,18 @@ class EnvelopeIn(MessageIn):
 
 @app.get('/')
 def root():
-    return {
-        'service':'UNG-NEXUS',
-        'name':'Uganda National Grid Integration & Interoperability Platform',
-        'status':'online',
-        'version':'0.4.2',
-        'health':'/health',
-        'readiness':'/ready',
-        'system':'/v1/system',
-        'docs':'/docs'
-    }
+    return {'service':'UNG-NEXUS','name':'Uganda National Grid Integration & Interoperability Platform','status':'online','version':'0.4.3','health':'/health','readiness':'/ready','system':'/v1/system','docs':'/docs'}
 
 @app.get('/health')
-def health(): return {'status':'ok','service':'UNG-NEXUS','version':'0.4.2'}
+def health(): return {'status':'ok','service':'UNG-NEXUS','version':'0.4.3'}
 @app.get('/ready')
 def ready():
     try:
         with conn() as c:c.execute('SELECT 1')
-        return {'status':'ready','database':'connected','janus':JANUS_BASE_URL}
-    except Exception:return {'status':'degraded','database':'unavailable','janus':JANUS_BASE_URL}
+        return {'status':'ready','database':'connected','janus':JANUS_BASE_URL,'apollo_registered':bool(APOLLO_BASE_URL)}
+    except Exception:return {'status':'degraded','database':'unavailable','janus':JANUS_BASE_URL,'apollo_registered':False}
 @app.get('/v1/system')
-def system(): return {'system_id':'UNG-NEXUS','domain':'integration-interoperability','capabilities':['endpoint-registry','message-routing','inbound-gateway','outbound-http-delivery','retry','integration-audit','janus-bearer-auth']}
+def system(): return {'system_id':'UNG-NEXUS','domain':'integration-interoperability','capabilities':['endpoint-registry','message-routing','inbound-gateway','outbound-http-delivery','retry','integration-audit','janus-bearer-auth','apollo-route']}
 @app.get('/v1/endpoints')
 def endpoints(authorization:str|None=Header(None)):
     auth('nexus.endpoints.read',authorization)
@@ -100,7 +90,7 @@ def inbound(b:EnvelopeIn,authorization:str|None=Header(None)):
 def deliver(url,envelope,authorization):
     body=json.dumps(envelope,separators=(',',':')).encode(); last_error=None; last_code=None
     for attempt in range(1,DELIVERY_RETRIES+1):
-        req=urllib.request.Request(url,data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4.2'})
+        req=urllib.request.Request(url,data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.4.3'})
         try:
             with urllib.request.urlopen(req,timeout=DELIVERY_TIMEOUT) as r:
                 code=int(r.status)
