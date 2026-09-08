@@ -5,10 +5,11 @@ from datetime import datetime, timezone
 import json, os, time, psycopg, urllib.error, urllib.request
 from psycopg.rows import dict_row
 from interop import NexusEnvelope, connectors
-app=FastAPI(title='UNG-NEXUS',version='0.5.1');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
+from pulsar_transport import relay as relay_to_pulsar
+app=FastAPI(title='UNG-NEXUS',version='0.6.0');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 def auth(permission,authorization):
  if not authorization or not authorization.lower().startswith('bearer '):raise HTTPException(401,'JANUS bearer token required')
- req=urllib.request.Request(JANUS_BASE_URL+'/v1/auth/introspect',data=b'',method='POST',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.5.1'})
+ req=urllib.request.Request(JANUS_BASE_URL+'/v1/auth/introspect',data=b'',method='POST',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.6.0'})
  try:
   with urllib.request.urlopen(req,timeout=5) as r:data=json.loads(r.read().decode())
  except urllib.error.HTTPError as e:
@@ -24,7 +25,7 @@ def run_apollo_acceptance_probe():
  if not APOLLO_BASE_URL or not DB:return
  t=utcnow();status='failed';code=None;mid=None;error=None
  try:
-  req=urllib.request.Request(APOLLO_BASE_URL+'/v1/nexus/acceptance',data=b'',method='POST',headers={'User-Agent':'UNG-NEXUS/0.5.1'})
+  req=urllib.request.Request(APOLLO_BASE_URL+'/v1/nexus/acceptance',data=b'',method='POST',headers={'User-Agent':'UNG-NEXUS/0.6.0'})
   with urllib.request.urlopen(req,timeout=DELIVERY_TIMEOUT) as r:
    code=int(r.status);body=json.loads(r.read().decode() or '{}');mid=body.get('message_id');status='passed' if 200<=code<300 and body.get('accepted') else 'failed'
  except urllib.error.HTTPError as e:code=int(e.code);error=f'http_{e.code}'
@@ -43,17 +44,17 @@ def init():
 class EndpointIn(BaseModel):name:str;base_url:HttpUrl;system_id:str;enabled:bool=True
 class MessageIn(BaseModel):source_system:str;target_system:str;message_type:str;payload:dict;message_id:str|None=None;correlation_id:str|None=None;trace_id:str|None=None;schema_version:str='1.0';priority:int=50;classification:str='internal';connector:str|None=None
 @app.get('/')
-def root():return {'service':'UNG-NEXUS','status':'online','version':'0.5.1','acceptance':'/v1/acceptance/status','docs':'/docs'}
+def root():return {'service':'UNG-NEXUS','status':'online','version':'0.6.0','transport':'UNG-PULSAR' if PULSAR_BASE_URL else 'direct','acceptance':'/v1/acceptance/status','docs':'/docs'}
 @app.get('/health')
-def health():return {'status':'ok','service':'UNG-NEXUS','version':'0.5.1','connectors':len(connectors._connectors)}
+def health():return {'status':'ok','service':'UNG-NEXUS','version':'0.6.0','connectors':len(connectors._connectors),'pulsar_transport':bool(PULSAR_BASE_URL)}
 @app.get('/ready')
 def ready():
  try:
   with conn() as c:c.execute('SELECT 1');probe=c.execute("SELECT status,response_code,message_id,error,created_at FROM nexus_acceptance_checks WHERE target_system='UNG-APOLLO' ORDER BY created_at DESC LIMIT 1").fetchone()
-  return {'status':'ready','database':'connected','janus':JANUS_BASE_URL,'apollo_registered':bool(APOLLO_BASE_URL),'apollo_acceptance':probe}
- except Exception:return {'status':'degraded','database':'unavailable','janus':JANUS_BASE_URL,'apollo_registered':False,'apollo_acceptance':None}
+  return {'status':'ready','database':'connected','janus':JANUS_BASE_URL,'pulsar':PULSAR_BASE_URL or None,'pulsar_configured':bool(PULSAR_BASE_URL),'apollo_registered':bool(APOLLO_BASE_URL),'apollo_acceptance':probe}
+ except Exception:return {'status':'degraded','database':'unavailable','janus':JANUS_BASE_URL,'pulsar':PULSAR_BASE_URL or None,'pulsar_configured':bool(PULSAR_BASE_URL),'apollo_registered':False,'apollo_acceptance':None}
 @app.get('/v1/system')
-def system():return {'system_id':'UNG-NEXUS','domain':'integration-interoperability','capabilities':['endpoint-registry','message-routing','inbound-gateway','outbound-http-delivery','integration-audit','standard-envelope','connector-registry','vendor-adapters','idempotent-inbound','retry','janus-bearer-auth','apollo-route','apollo-acceptance-probe']}
+def system():return {'system_id':'UNG-NEXUS','domain':'integration-interoperability','capabilities':['endpoint-registry','message-routing','inbound-gateway','pulsar-transport','outbound-http-delivery','integration-audit','standard-envelope','connector-registry','vendor-adapters','idempotent-inbound','idempotent-outbound','retry','janus-bearer-auth','apollo-route','apollo-acceptance-probe']}
 @app.get('/v1/acceptance/status')
 def acceptance_status():
  try:
@@ -81,7 +82,7 @@ def messages(authorization:str|None=Header(None)):
 def deliver(url,envelope,authorization):
  body=json.dumps(envelope,separators=(',',':')).encode();last_error=None;last_code=None
  for attempt in range(1,DELIVERY_RETRIES+1):
-  req=urllib.request.Request(url,data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.5.1'})
+  req=urllib.request.Request(url,data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.6.0'})
   try:
    with urllib.request.urlopen(req,timeout=DELIVERY_TIMEOUT) as r:
     code=int(r.status)
@@ -104,11 +105,17 @@ def inbound(b:MessageIn,authorization:str|None=Header(None)):
 @app.post('/v1/messages',status_code=202)
 def route_message(b:MessageIn,authorization:str|None=Header(None)):
  principal=auth('nexus.messages.write',authorization);env=NexusEnvelope(b.source_system,b.target_system,b.message_type,b.payload,b.message_id or str(uuid4()),b.correlation_id,b.trace_id,b.schema_version,b.priority,b.classification);d=env.to_dict();created=utcnow()
+ with conn() as c:
+  existing=c.execute('SELECT * FROM nexus_messages WHERE id=%s',(d['message_id'],)).fetchone()
+  if existing:return {'accepted':True,'duplicate':True,'message':existing}
  if b.connector:
   adapter=connectors.get(b.connector)
   if not adapter:raise HTTPException(404,'connector_not_found_or_disabled')
   result=adapter.send(env);return {'message_id':d['message_id'],'connector':b.connector,'result':result,'envelope':d}
- with conn() as c:target=c.execute('SELECT * FROM nexus_endpoints WHERE system_id=%s AND enabled=true ORDER BY created_at DESC LIMIT 1',(b.target_system,)).fetchone()
- if not target:status='unroutable';attempts=0;code=None;error='no_enabled_endpoint';delivered_at=None
- else:ok,attempts,code,error=deliver(target['base_url'],d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
+ if PULSAR_BASE_URL:
+  ok,attempts,code,error,result=relay_to_pulsar(d,authorization);status='relayed' if ok else 'failed';delivered_at=utcnow() if ok else None
+ else:
+  with conn() as c:target=c.execute('SELECT * FROM nexus_endpoints WHERE system_id=%s AND enabled=true ORDER BY created_at DESC LIMIT 1',(b.target_system,)).fetchone()
+  if not target:status='unroutable';attempts=0;code=None;error='no_enabled_endpoint';delivered_at=None
+  else:ok,attempts,code,error=deliver(target['base_url'],d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
  with conn() as c:return c.execute('INSERT INTO nexus_messages(id,source_system,target_system,message_type,payload,status,created_at,attempts,response_code,delivery_error,delivered_at,direction,principal_id,correlation_id,trace_id,schema_version,priority,classification) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *',(d['message_id'],b.source_system,b.target_system,b.message_type,psycopg.types.json.Jsonb(b.payload),status,created,attempts,code,error,delivered_at,'outbound',str(principal.get('id') or ''),d['correlation_id'],d['trace_id'],d['schema_version'],d['priority'],d['classification'])).fetchone()
