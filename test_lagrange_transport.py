@@ -3,6 +3,7 @@ import hmac
 import json
 
 import lagrange_transport
+import pulsar_transport
 
 
 def test_build_request_matches_lagrange_hmac_contract(monkeypatch):
@@ -41,3 +42,21 @@ def test_build_request_matches_lagrange_hmac_contract(monkeypatch):
     assert headers["X-Lagrange-Timestamp"] == "1700000000"
     assert headers["X-Lagrange-Nonce"] == "nonce-001"
     assert headers["X-Lagrange-Signature"] == expected_signature
+
+
+def test_pulsar_transport_prefers_lagrange(monkeypatch):
+    envelope = {"message_id": "msg-002", "payload": {"probe": True}}
+    expected = (True, 1, 202, None, {"status": "accepted"})
+    seen = {}
+
+    def fake_lagrange_relay(value):
+        seen["envelope"] = value
+        return expected
+
+    monkeypatch.setattr(pulsar_transport, "LAGRANGE_BASE_URL", "https://lagrange.example")
+    monkeypatch.setattr(pulsar_transport, "relay_to_lagrange", fake_lagrange_relay)
+
+    result = pulsar_transport.relay(envelope, "Bearer janus-token")
+
+    assert result == expected
+    assert seen["envelope"] == envelope
