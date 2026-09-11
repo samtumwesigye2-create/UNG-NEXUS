@@ -1,10 +1,18 @@
 import json, os, time, urllib.error, urllib.request
 
+from lagrange_transport import LAGRANGE_BASE_URL, relay as relay_to_lagrange
+
 PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','https://ung-pulsar-production.up.railway.app').rstrip('/')
 DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'))
 DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 
 def relay(envelope:dict,authorization:str):
+    # Preferred production path: NEXUS -> LAGRANGE -> PULSAR.
+    # JANUS has already authenticated/authorized the caller in NEXUS before this function runs.
+    if LAGRANGE_BASE_URL:
+        return relay_to_lagrange(envelope)
+
+    # Compatibility fallback for environments where LAGRANGE is not configured yet.
     body=json.dumps(envelope,separators=(',',':')).encode();last_error=None;last_code=None;last_result=None
     for attempt in range(1,DELIVERY_RETRIES+1):
         req=urllib.request.Request(PULSAR_BASE_URL+'/v1/nexus/inbound',data=body,method='POST',headers={'Content-Type':'application/json','Authorization':authorization,'User-Agent':'UNG-NEXUS/0.6.0'})
