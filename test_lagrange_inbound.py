@@ -5,7 +5,7 @@ os.environ.setdefault('LAGRANGE_INBOUND_KEY_ID', 'primary')
 
 from fastapi.testclient import TestClient
 
-from app import app
+from lagrange_entrypoint import app
 
 
 def test_lagrange_capabilities_are_exposed():
