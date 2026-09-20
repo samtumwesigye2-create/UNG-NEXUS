@@ -1,10 +1,5 @@
 import os,time,httpx
 
-@app.on_event("startup")
-async def initialize_persistence_on_startup():
-    if persistence_configured():
-        persistence_init()
-
 
 from fastapi import FastAPI,Header,HTTPException,Request
 from models import BridgeMessage,BridgeResult
@@ -57,6 +52,12 @@ from network_spillover import route as spillover_route,items as spillover_items
 from persistent_state import init as persistence_init,configured as persistence_configured
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
+
+@app.on_event("startup")
+async def initialize_persistence_on_startup():
+    if persistence_configured():
+        persistence_init()
+
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
 SHADOW_TARGET=os.getenv("GOVBRIDGE_SHADOW_URL","").rstrip("/")
 RATE_LIMIT=int(os.getenv("GOVBRIDGE_RATE_LIMIT_PER_MINUTE","600"))
