@@ -117,13 +117,18 @@ async def bridge(message:BridgeMessage,authorization:str|None=Header(None)):
     await shadow(mask(envelope),authorization)
     if not circuit_allow(message.target_system):
         audit({"action":"circuit_open","message_id":message.message_id,"target":message.target_system})
-        return BridgeResult(message_id=message.message_id,agency=message.target_system,status="queued_fallback",error="circuit_open")
+        raise HTTPException(503,detail={"message_id":message.message_id,"agency":message.target_system,"status":"queued_fallback","error":"circuit_open"})
     ok,code,response,error=await send(message.target_system,envelope)
     if ok:circuit_success(message.target_system)
     else:circuit_failure(message.target_system)
     if policy.get("finality"):finalize(message.message_id,"committed" if ok else "pending-retry")
     audit({"action":"bridge_result","message_id":message.message_id,"target":message.target_system,"status":"delivered" if ok else "failed","http_status":code,"error":error})
-    return BridgeResult(message_id=message.message_id,agency=message.target_system,status="delivered" if ok else "failed",http_status=code,response=mask(response),error=error)
+    if not ok:
+        if error=="adapter_not_configured":status_code=503
+        elif error in ("ReadTimeout","ConnectTimeout","PoolTimeout","WriteTimeout"):status_code=504
+        else:status_code=502
+        raise HTTPException(status_code,detail={"message_id":message.message_id,"agency":message.target_system,"status":"failed","downstream_http_status":code,"response":mask(response),"error":error})
+    return BridgeResult(message_id=message.message_id,agency=message.target_system,status="delivered",http_status=code,response=mask(response),error=None)
 
 @app.post("/v1/legacy/inbound",status_code=202)
 async def legacy_inbound(message:BridgeMessage,authorization:str|None=Header(None)):
