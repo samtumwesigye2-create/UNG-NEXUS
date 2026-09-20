@@ -41,3 +41,33 @@ def self_test():
    remains=cur.fetchone()[0]
  return {"ok":bool(row) and row[0].get("marker")==marker and row[1]=="pending" and not remains,
          "write":bool(row),"readback":bool(row),"cleanup":not remains}
+
+def put_divergence_hold(entity_id,tier,legacy,modern,field_name,state="manual-review"):
+ if not configured():return False
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:cur.execute("""INSERT INTO govbridge.divergence_holds(entity_id,tier,legacy,modern,field_name,state) VALUES(%s,%s,%s::jsonb,%s::jsonb,%s,%s) ON CONFLICT(entity_id) DO UPDATE SET tier=EXCLUDED.tier,legacy=EXCLUDED.legacy,modern=EXCLUDED.modern,field_name=EXCLUDED.field_name,state=EXCLUDED.state,updated_at=now()""",(entity_id,tier,json.dumps(legacy),json.dumps(modern),field_name,state))
+ return True
+def get_divergence_hold(entity_id):
+ if not configured():return None
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("SELECT tier,legacy,modern,field_name,state,created_at,updated_at FROM govbridge.divergence_holds WHERE entity_id=%s",(entity_id,));r=cur.fetchone()
+ return None if not r else {"entity_id":entity_id,"tier":r[0],"legacy":r[1],"modern":r[2],"field":r[3],"state":r[4],"created_at":r[5].isoformat(),"updated_at":r[6].isoformat()}
+def resolve_divergence_hold(entity_id):
+ if not configured():return False
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:cur.execute("UPDATE govbridge.divergence_holds SET state='resolved',updated_at=now() WHERE entity_id=%s",(entity_id,));return cur.rowcount>0
+def append_reconciliation_event(entity_id,event):
+ if not configured():return False
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:cur.execute("INSERT INTO govbridge.reconciliation_ledger(entity_id,event) VALUES(%s,%s::jsonb)",(entity_id,json.dumps(event)))
+ return True
+def reconciliation_events(limit=1000):
+ if not configured():return []
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:cur.execute("SELECT event FROM govbridge.reconciliation_ledger ORDER BY id DESC LIMIT %s",(min(max(int(limit),1),5000),));return [r[0] for r in reversed(cur.fetchall())]
+def claim_idempotency(message_id,payload_hash="0"*64):
+ if not configured():return None
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("INSERT INTO govbridge.idempotency_keys(message_id,payload_hash) VALUES(%s,%s) ON CONFLICT(message_id) DO NOTHING RETURNING message_id",(message_id,payload_hash));return cur.fetchone() is not None
