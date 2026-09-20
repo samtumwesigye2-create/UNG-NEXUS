@@ -25,3 +25,19 @@ def spillover(limit=100):
  if not configured():return []
  with psycopg.connect(os.environ["DATABASE_URL"]) as con:
   with con.cursor() as cur:cur.execute("SELECT id::text,segment,envelope,state,created_at FROM govbridge.spillover_queue ORDER BY created_at LIMIT %s",(min(int(limit),1000),));return [{"id":r[0],"segment":r[1],"envelope":r[2],"state":r[3],"created_at":r[4].isoformat()} for r in cur.fetchall()]
+
+def self_test():
+ if not configured():return {"ok":False,"reason":"postgres_not_configured"}
+ import uuid
+ marker=str(uuid.uuid4())
+ envelope={"synthetic":True,"purpose":"persistence-verification","marker":marker}
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("INSERT INTO govbridge.spillover_queue(id,segment,envelope,state) VALUES (%s,'async',%s::jsonb,'pending')",(marker,json.dumps(envelope)))
+   cur.execute("SELECT envelope,state FROM govbridge.spillover_queue WHERE id=%s",(marker,))
+   row=cur.fetchone()
+   cur.execute("DELETE FROM govbridge.spillover_queue WHERE id=%s",(marker,))
+   cur.execute("SELECT EXISTS(SELECT 1 FROM govbridge.spillover_queue WHERE id=%s)",(marker,))
+   remains=cur.fetchone()[0]
+ return {"ok":bool(row) and row[0].get("marker")==marker and row[1]=="pending" and not remains,
+         "write":bool(row),"readback":bool(row),"cleanup":not remains}
