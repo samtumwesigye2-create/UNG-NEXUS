@@ -27,6 +27,9 @@ from sandbox import create_session,require as require_sandbox,seed as sandbox_se
 from terminal_emulator import modern_to_terminal,terminal_to_modern
 from sandbox_edge import register_node,nodes as edge_nodes,attach as edge_attach,reset_room,record as training_record,analytics as training_analytics
 from sandbox_peripherals import emulate as emulate_peripheral
+from sandbox_cells import provision as provision_cell,destroy as destroy_cell,stats as cell_stats
+from synthetic_weaver import generate as generate_synthetic,templates as scenario_templates
+from rollout import set_phase,current as rollout_current
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -327,5 +330,26 @@ async def sandbox_analytics(authorization:str|None=Header(None)):await authorize
 async def sandbox_portal_config(authorization:str|None=Header(None)):
     await authorize(authorization);return {"access":"zero-trust-authenticated","workspace":"sandbox-only","terminal_rendering":"html5-emulator-ready","production_routes_exposed":False,"banner":BANNER}
 
+@app.post("/v1/sandbox/cell/{sid}",status_code=201)
+async def sandbox_cell_create(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return provision_cell(sid,str(p.get("id") or "service"),body.get("region"),int(body.get("ttl") or 7200))
+@app.delete("/v1/sandbox/cell/{cell_id}")
+async def sandbox_cell_delete(cell_id:str,authorization:str|None=Header(None)):
+    await authorize(authorization);return destroy_cell(cell_id)
+@app.get("/v1/sandbox/cells")
+async def sandbox_cells(authorization:str|None=Header(None)):await authorize(authorization);return cell_stats()
+@app.get("/v1/sandbox/synthetic")
+async def sandbox_synthetic(count:int=100,offset:int=0,region:str="central",authorization:str|None=Header(None)):
+    await authorize(authorization);return {"synthetic":True,"offset":offset,"count":min(count,10000),"records":generate_synthetic(count,offset,region)}
+@app.get("/v1/sandbox/scenarios")
+async def sandbox_scenarios(authorization:str|None=Header(None)):await authorize(authorization);return scenario_templates()
+@app.get("/v1/sandbox/rollout")
+async def sandbox_rollout(authorization:str|None=Header(None)):await authorize(authorization);return rollout_current()
+@app.post("/v1/sandbox/rollout")
+async def sandbox_rollout_set(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization)
+    try:return set_phase(int(body.get("phase") or 1))
+    except ValueError as ex:raise HTTPException(422,str(ex))
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["unified-sandbox-edge","on-prem-training-node-registry","cloud-sandbox-portal","sandbox-only-ztna-context","dummy-peripheral-emulation","room-and-session-reset","training-performance-analytics","isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["hyperscale-cellular-sandbox","ephemeral-session-cells","regional-session-sharding","automatic-cell-expiration","paged-algorithmic-synthetic-data","scenario-template-engine","three-phase-training-rollout","unified-sandbox-edge","on-prem-training-node-registry","cloud-sandbox-portal","sandbox-only-ztna-context","dummy-peripheral-emulation","room-and-session-reset","training-performance-analytics","isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
