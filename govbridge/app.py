@@ -36,6 +36,9 @@ from migration_velocity import plan as velocity_plan
 from stress_vault import create as stress_create,update as stress_update,runs as stress_runs
 from adaptive_transport import select as transport_select,profile as transport_profile,batch as transport_batch
 from training_compliance import record as compliance_record,issue as training_issue,progress as training_progress
+from low_bandwidth_vtr import configure as vtr_configure,encode_delta,decode_delta,validate as vtr_validate,reconstitute as vtr_reconstitute
+from training_credentials import issue_rs256
+from analytics_aggregator import ingest as analytics_ingest,aggregate_hour,dashboard as analytics_dashboard
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -407,5 +410,43 @@ async def training_credential(body:dict,authorization:str|None=Header(None)):
     except ValueError as ex:raise HTTPException(403,str(ex))
     except RuntimeError as ex:raise HTTPException(503,str(ex))
 
+@app.post("/v1/sandbox/{sid}/vtr/configure")
+async def vtr_cfg(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return vtr_configure(sid,float(body.get("target_kbps") or 15))
+@app.post("/v1/sandbox/{sid}/vtr/validate")
+async def vtr_check(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return vtr_validate(body.get("fields") or {},body.get("rules") or {})
+@app.post("/v1/sandbox/{sid}/vtr/encode")
+async def vtr_enc(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return encode_delta(body.get("fields") or {})
+@app.post("/v1/sandbox/{sid}/vtr/reconstitute")
+async def vtr_rec(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);fields=decode_delta(str(body["payload"]));return vtr_reconstitute(fields,body.get("mapping") or {})
+@app.post("/v1/sandbox/training/credential/rs256")
+async def training_credential_rs256(body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);principal=str(p.get("id"))
+    modules=body.get("modules") or []
+    try:
+        # Reuse deterministic completion gate before asymmetric credential issuance.
+        training_issue(principal,modules,60)
+    except ValueError as ex:raise HTTPException(403,str(ex))
+    except RuntimeError:
+        # Legacy HMAC issuer may be unconfigured; eligibility was already checked above.
+        pass
+    metrics=body.get("compliance_metrics") or {}
+    if metrics.get("proctor_evaluation",{}).get("status")!="VERIFIED_COMPETENT":raise HTTPException(403,"verified_competence_required")
+    if int(metrics.get("proctor_evaluation",{}).get("catastrophic_error_count",1))!=0:raise HTTPException(403,"catastrophic_errors_present")
+    try:return issue_rs256(principal,body.get("identity_context") or {},metrics,body.get("production_entitlements") or {},modules,int(body.get("ttl") or 2592000))
+    except RuntimeError as ex:raise HTTPException(503,str(ex))
+@app.post("/v1/sandbox/analytics/event",status_code=202)
+async def sandbox_analytics_event(body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);return analytics_ingest({**body,"principal_id":p.get("id")})
+@app.post("/v1/sandbox/analytics/hourly")
+async def sandbox_analytics_hourly(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return aggregate_hour(body.get("hour"))
+@app.get("/v1/sandbox/analytics/dashboard")
+async def sandbox_analytics_dashboard(persona:str,scope:str|None=None,authorization:str|None=Header(None)):
+    await authorize(authorization);return analytics_dashboard(persona,scope)
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["adaptive-transport-fabric","bandwidth-probed-stream-selection","headless-low-bandwidth-terminal","batched-low-bandwidth-sync","training-state-verification","zero-error-training-gate","signed-training-credential","iam-training-gate-ready","dynamic-elastic-ring","scheduled-capacity-ring","telemetry-driven-scaling","graceful-cluster-draining","branded-waiting-room-api","regional-edge-cache-manifest","read-only-reference-shards","migration-velocity-plan","synthetic-stress-test-vault","hyperscale-cellular-sandbox","ephemeral-session-cells","regional-session-sharding","automatic-cell-expiration","paged-algorithmic-synthetic-data","scenario-template-engine","three-phase-training-rollout","unified-sandbox-edge","on-prem-training-node-registry","cloud-sandbox-portal","sandbox-only-ztna-context","dummy-peripheral-emulation","room-and-session-reset","training-performance-analytics","isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["text-driven-sync-mesh","virtual-terminal-reconstitution","differential-sync-payloads","local-validation-contract","rs256-training-credentials","hourly-analytics-aggregation","persona-scoped-training-dashboards","adaptive-transport-fabric","bandwidth-probed-stream-selection","headless-low-bandwidth-terminal","batched-low-bandwidth-sync","training-state-verification","zero-error-training-gate","signed-training-credential","iam-training-gate-ready","dynamic-elastic-ring","scheduled-capacity-ring","telemetry-driven-scaling","graceful-cluster-draining","branded-waiting-room-api","regional-edge-cache-manifest","read-only-reference-shards","migration-velocity-plan","synthetic-stress-test-vault","hyperscale-cellular-sandbox","ephemeral-session-cells","regional-session-sharding","automatic-cell-expiration","paged-algorithmic-synthetic-data","scenario-template-engine","three-phase-training-rollout","unified-sandbox-edge","on-prem-training-node-registry","cloud-sandbox-portal","sandbox-only-ztna-context","dummy-peripheral-emulation","room-and-session-reset","training-performance-analytics","isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
