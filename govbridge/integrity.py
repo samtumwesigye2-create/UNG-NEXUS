@@ -1,11 +1,13 @@
 import hashlib, json, os, time
 from collections import deque
+from persistent_state import configured as db_configured,claim_idempotency
 
 _seen: dict[str,float] = {}
 _audit = deque(maxlen=10000)
 _prev_hash = "GENESIS"
 
 def idempotent(message_id: str, ttl: int = 86400) -> bool:
+    if db_configured(): return claim_idempotency(message_id)
     now=time.time()
     for k,v in list(_seen.items()):
         if now-v > ttl: _seen.pop(k,None)
