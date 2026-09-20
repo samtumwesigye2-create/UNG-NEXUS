@@ -1,6 +1,6 @@
-import asyncio,hashlib,json,os,time
+import asyncio,hashlib,json,os,time\nfrom persistent_state import configured as db_configured,advisory_lock,advisory_unlock
 from collections import deque
-_wal=deque(maxlen=200000);_divergence=deque(maxlen=20000);_authority={};_read_slice={};_locks={}
+_wal=deque(maxlen=200000);_divergence=deque(maxlen=20000);_authority={};_read_slice={};_locks={};_db_locks={}
 
 def wal_append(envelope):
     seq=(_wal[-1]["seq"]+1) if _wal else 1
@@ -28,13 +28,27 @@ def choose_read(route,stable_key):
     return "modern" if bucket<p else "legacy"
 
 def acquire(record_key,owner,ttl=30):
+    if db_configured():
+        key=str(record_key)
+        cur=_db_locks.get(key)
+        if cur and cur["owner"]==owner:return True
+        handle=advisory_lock(key)
+        if not handle:return False
+        _db_locks[key]={"owner":owner,"handle":handle,"acquired_at":time.time()};return True
     now=time.time();cur=_locks.get(record_key)
     if cur and cur["expires_at"]>now and cur["owner"]!=owner:return False
     _locks[record_key]={"owner":owner,"expires_at":now+ttl};return True
 def release(record_key,owner):
+    key=str(record_key)
+    if db_configured():
+        cur=_db_locks.get(key)
+        if not cur or cur["owner"]!=owner:return False
+        ok=advisory_unlock(cur["handle"],key);_db_locks.pop(key,None);return ok
     if _locks.get(record_key,{}).get("owner")==owner:_locks.pop(record_key,None);return True
     return False
-def lock_state():return _locks
+def lock_state():
+    if db_configured():return {k:{"owner":v["owner"],"acquired_at":v["acquired_at"],"backend":"postgres-advisory"} for k,v in _db_locks.items()}
+    return _locks
 
 def reconcile_pair(mid,legacy_record,modern_record,legal_source="legacy"):
     lh=hashlib.sha256(json.dumps(legacy_record,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
