@@ -103,7 +103,7 @@ async def adapters(authorization:str|None=Header(None)):
 async def bridge(message:BridgeMessage,authorization:str|None=Header(None)):
     principal=await authorize(authorization);throttle(principal)
     if not allowed(message.target_system,message.message_type):raise HTTPException(403,"route_not_allowed")
-    if not idempotent(message.message_id):
+    try:\n        fresh=idempotent(message.message_id,message.model_dump())\n    except ValueError as exc:\n        raise HTTPException(409,str(exc))\n    if not fresh:
         audit({"action":"duplicate_suppressed","message_id":message.message_id,"target":message.target_system,"principal":principal.get("id")})
         return BridgeResult(message_id=message.message_id,agency=message.target_system,status="duplicate_suppressed")
     try: payload=translate(message.payload)
@@ -135,7 +135,7 @@ async def bridge(message:BridgeMessage,authorization:str|None=Header(None)):
 @app.post("/v1/legacy/inbound",status_code=202)
 async def legacy_inbound(message:BridgeMessage,authorization:str|None=Header(None)):
     principal=await authorize(authorization);throttle(principal)
-    if not idempotent(message.message_id):return {"accepted":True,"duplicate":True,"message_id":message.message_id}
+    try:\n        fresh=idempotent(message.message_id,message.model_dump())\n    except ValueError as exc:\n        raise HTTPException(409,str(exc))\n    if not fresh:return {"accepted":True,"duplicate":True,"message_id":message.message_id}
     env=message.model_dump();enqueue("legacy_to_modern",mask(env));audit({"action":"legacy_sync_inbound","message_id":message.message_id,"source":message.source_system,"target":message.target_system,"principal":principal.get("id")})
     return {"accepted":True,"duplicate":False,"message_id":message.message_id,"sync":"queued"}
 
