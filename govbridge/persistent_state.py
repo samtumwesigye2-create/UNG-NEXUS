@@ -10,9 +10,9 @@ CREATE TABLE IF NOT EXISTS govbridge.reconciliation_ledger(id BIGSERIAL PRIMARY 
 CREATE TABLE IF NOT EXISTS govbridge.idempotency_keys(message_id TEXT PRIMARY KEY,payload_hash CHAR(64) NOT NULL,result JSONB,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS spillover_pending_idx ON govbridge.spillover_queue(state,created_at);
 CREATE INDEX IF NOT EXISTS reconciliation_entity_idx ON govbridge.reconciliation_ledger(entity_id,created_at DESC);
-CREATE TABLE IF NOT EXISTS govbridge.failsafe_dlq(id BIGSERIAL PRIMARY KEY,message_id TEXT,envelope JSONB NOT NULL,error TEXT,state TEXT NOT NULL DEFAULT 'pending',created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS govbridge.failsafe_dlq(id BIGSERIAL PRIMARY KEY,message_id TEXT,envelope JSONB NOT NULL,error TEXT,state TEXT NOT NULL DEFAULT 'pending',attempt_count INT NOT NULL DEFAULT 0,next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),last_attempt_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS govbridge.manual_holds(id BIGSERIAL PRIMARY KEY,item JSONB NOT NULL,reason TEXT,state TEXT NOT NULL DEFAULT 'manual-hold',created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-CREATE INDEX IF NOT EXISTS failsafe_dlq_state_idx ON govbridge.failsafe_dlq(state,created_at);"""
+ALTER TABLE govbridge.failsafe_dlq ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;\nALTER TABLE govbridge.failsafe_dlq ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();\nALTER TABLE govbridge.failsafe_dlq ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;\nCREATE INDEX IF NOT EXISTS failsafe_dlq_state_idx ON govbridge.failsafe_dlq(state,next_attempt_at,created_at);"""
 def configured():return bool(os.getenv("DATABASE_URL")) and psycopg is not None
 def init():
  if not configured():return {"configured":False,"initialized":False}
@@ -122,3 +122,17 @@ def failsafe_self_test():
    cur.execute("SELECT EXISTS(SELECT 1 FROM govbridge.manual_holds WHERE id=%s)",(hold_id,));hold_remains=cur.fetchone()[0]
  ok=bool(dlq) and dlq[0]==marker and dlq[1].get("message_id")==marker and dlq[2]=="pending" and bool(hold) and hold[0].get("message_id")==marker and hold[1]=="manual-hold" and not dlq_remains and not hold_remains
  return {"ok":ok,"dlq_write_read":bool(dlq),"manual_hold_write_read":bool(hold),"cleanup":not dlq_remains and not hold_remains}
+
+def claim_failsafe_dlq(limit=25):
+ if not configured():return []
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("""WITH picked AS (SELECT id FROM govbridge.failsafe_dlq WHERE state='pending' AND next_attempt_at<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT %s) UPDATE govbridge.failsafe_dlq q SET state='processing',attempt_count=q.attempt_count+1,last_attempt_at=now() FROM picked WHERE q.id=picked.id RETURNING q.id,q.message_id,q.envelope,q.error,q.attempt_count""",(min(max(int(limit),1),100),));rows=cur.fetchall()
+ return [{"sequence":r[0],"message_id":r[1],"envelope":r[2],"error":r[3],"attempt_count":r[4],"state":"processing"} for r in rows]
+def finish_failsafe_dlq(sequence,success,error=None,max_attempts=8):
+ if not configured():return False
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   if success:cur.execute("UPDATE govbridge.failsafe_dlq SET state='acked',error=NULL WHERE id=%s AND state='processing'",(sequence,))
+   else:cur.execute("""UPDATE govbridge.failsafe_dlq SET state=CASE WHEN attempt_count >= %s THEN 'dead' ELSE 'pending' END,error=%s,next_attempt_at=now()+(LEAST(3600,POWER(2,LEAST(attempt_count,11)))::text||' seconds')::interval WHERE id=%s AND state='processing'""",(max_attempts,str(error or "retry_failed"),sequence))
+   return cur.rowcount>0
