@@ -105,3 +105,20 @@ def manual_hold_items(limit=100):
   with con.cursor() as cur:
    cur.execute("SELECT id,item,reason,state,created_at FROM govbridge.manual_holds ORDER BY id DESC LIMIT %s",(min(max(int(limit),1),1000),));rows=cur.fetchall()
  return [{"id":r[0],"item":r[1],"reason":r[2],"state":r[3],"held_at":r[4].timestamp()} for r in reversed(rows)]
+
+def failsafe_self_test():
+ if not configured():return {"ok":False,"reason":"postgres_not_configured"}
+ marker="selftest-"+str(__import__("uuid").uuid4())
+ env={"message_id":marker,"synthetic":True,"purpose":"failsafe-persistence-verification"}
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("INSERT INTO govbridge.failsafe_dlq(message_id,envelope,error) VALUES(%s,%s::jsonb,'self_test') RETURNING id",(marker,json.dumps(env)));dlq_id=cur.fetchone()[0]
+   cur.execute("SELECT message_id,envelope,state FROM govbridge.failsafe_dlq WHERE id=%s",(dlq_id,));dlq=cur.fetchone()
+   cur.execute("INSERT INTO govbridge.manual_holds(item,reason) VALUES(%s::jsonb,'self_test') RETURNING id",(json.dumps(env),));hold_id=cur.fetchone()[0]
+   cur.execute("SELECT item,state FROM govbridge.manual_holds WHERE id=%s",(hold_id,));hold=cur.fetchone()
+   cur.execute("DELETE FROM govbridge.failsafe_dlq WHERE id=%s",(dlq_id,))
+   cur.execute("DELETE FROM govbridge.manual_holds WHERE id=%s",(hold_id,))
+   cur.execute("SELECT EXISTS(SELECT 1 FROM govbridge.failsafe_dlq WHERE id=%s)",(dlq_id,));dlq_remains=cur.fetchone()[0]
+   cur.execute("SELECT EXISTS(SELECT 1 FROM govbridge.manual_holds WHERE id=%s)",(hold_id,));hold_remains=cur.fetchone()[0]
+ ok=bool(dlq) and dlq[0]==marker and dlq[1].get("message_id")==marker and dlq[2]=="pending" and bool(hold) and hold[0].get("message_id")==marker and hold[1]=="manual-hold" and not dlq_remains and not hold_remains
+ return {"ok":ok,"dlq_write_read":bool(dlq),"manual_hold_write_read":bool(hold),"cleanup":not dlq_remains and not hold_remains}
