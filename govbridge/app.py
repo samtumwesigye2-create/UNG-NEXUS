@@ -7,6 +7,10 @@ from integrity import idempotent,audit,audit_tail,mask
 from schema_translate import translate
 from resilience import circuit_allow,circuit_success,circuit_failure,circuit_state
 from sync import enqueue,queue_status,reconcile,reconciliation_tail
+from governance import sector_for,profile,cross_domain_allowed
+from conflict_resolver import resolve as resolve_conflict
+from finality import reserve,finalize,status as finality_status
+from reconciliation_worker import compare as continuous_compare
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -55,7 +59,12 @@ async def bridge(message:BridgeMessage,authorization:str|None=Header(None)):
         return BridgeResult(message_id=message.message_id,agency=message.target_system,status="duplicate_suppressed")
     try: payload=translate(message.payload)
     except ValueError as e:raise HTTPException(422,str(e))
-    envelope={**message.model_dump(),"payload":payload,"bridge":{"system":"UNG-GOVBRIDGE","received_at_epoch":int(time.time()),"principal_id":str(principal.get("id") or "")}}
+    sector=sector_for(message.message_type,payload);policy=profile(sector)
+    if not cross_domain_allowed(sector,payload):raise HTTPException(403,"approved_cross_domain_guard_required")
+    if policy.get("finality"):
+        hold=reserve(message.message_id,payload)
+        if not hold["created"] and not hold["same_payload"]:raise HTTPException(409,"idempotency_key_payload_conflict")
+    envelope={**message.model_dump(),"payload":payload,"bridge":{"system":"UNG-GOVBRIDGE","received_at_epoch":int(time.time()),"principal_id":str(principal.get("id") or ""),"sector":sector,"sector_policy":policy}}
     audit({"action":"bridge_request","message_id":message.message_id,"source":message.source_system,"target":message.target_system,"type":message.message_type,"principal":principal.get("id"),"payload":mask(payload)})
     enqueue("modern_to_legacy",mask(envelope))
     await shadow(mask(envelope),authorization)
@@ -65,6 +74,7 @@ async def bridge(message:BridgeMessage,authorization:str|None=Header(None)):
     ok,code,response,error=await send(message.target_system,envelope)
     if ok:circuit_success(message.target_system)
     else:circuit_failure(message.target_system)
+    if policy.get("finality"):finalize(message.message_id,"committed" if ok else "pending-retry")
     audit({"action":"bridge_result","message_id":message.message_id,"target":message.target_system,"status":"delivered" if ok else "failed","http_status":code,"error":error})
     return BridgeResult(message_id=message.message_id,agency=message.target_system,status="delivered" if ok else "failed",http_status=code,response=mask(response),error=error)
 
@@ -85,5 +95,20 @@ async def audits(authorization:str|None=Header(None)):await authorize(authorizat
 @app.get("/v1/operations")
 async def operations(authorization:str|None=Header(None)):await authorize(authorization);return {"queue":queue_status(),"circuits":circuit_state(),"shadow_enabled":bool(SHADOW_TARGET),"rate_limit_per_minute":RATE_LIMIT}
 
+@app.post("/v1/conflicts/resolve")
+async def conflicts(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return resolve_conflict(str(body.get("domain") or ""),body.get("records") or [])
+@app.get("/v1/finality/{message_id}")
+async def finality(message_id:str,authorization:str|None=Header(None)):
+    await authorize(authorization);return finality_status(message_id) or {"message_id":message_id,"state":"not_found"}
+@app.post("/v1/reconcile/continuous")
+async def reconcile_continuous(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return continuous_compare(body.get("legacy") or {},body.get("modern") or {})
+@app.get("/v1/governance/sectors")
+async def sectors(authorization:str|None=Header(None)):
+    await authorize(authorization)
+    from governance import SECTOR_PROFILES
+    return SECTOR_PROFILES
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["bi-directional-sync","idempotency","schema-translation","fixed-width-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
