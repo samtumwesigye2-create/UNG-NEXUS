@@ -11,6 +11,8 @@ from governance import sector_for,profile,cross_domain_allowed
 from conflict_resolver import resolve as resolve_conflict
 from finality import reserve,finalize,status as finality_status
 from reconciliation_worker import compare as continuous_compare
+from parallel_run import wal_append,wal_status,mark,divergence,divergences,set_authority,authority,set_read_slice,choose_read,acquire,release,lock_state,reconcile_pair
+from fanout import fanout
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -110,5 +112,48 @@ async def sectors(authorization:str|None=Header(None)):
     from governance import SECTOR_PROFILES
     return SECTOR_PROFILES
 
+@app.post("/v1/parallel/write",status_code=202)
+async def parallel_write(message:BridgeMessage,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);throttle(principal)
+    if not idempotent("parallel:"+message.message_id):return {"accepted":True,"duplicate":True,"message_id":message.message_id}
+    env=message.model_dump();env["_bridge_order"]={"received_at_ns":time.time_ns(),"clock":"system_utc_ns"}
+    wal=wal_append(mask(env))
+    results=await fanout(env,authorization)
+    mark(message.message_id,"legacy","committed" if results["legacy"].get("ok") else "pending",results["legacy"].get("error"))
+    mark(message.message_id,"modern","committed" if results["modern"].get("ok") else "pending",results["modern"].get("error"))
+    d=divergence(message.message_id,results["legacy"].get("ok"),results["modern"].get("ok"),"critical")
+    audit({"action":"parallel_fanout","message_id":message.message_id,"wal_seq":wal["seq"],"legacy":results["legacy"],"modern":results["modern"],"divergence":bool(d),"principal":principal.get("id")})
+    return {"accepted":True,"message_id":message.message_id,"wal_seq":wal["seq"],"fanout":results,"divergence":d}
+
+@app.get("/v1/parallel/wal")
+async def parallel_wal(authorization:str|None=Header(None)):await authorize(authorization);return {"results":wal_status()}
+@app.get("/v1/parallel/divergence")
+async def parallel_divergence(authorization:str|None=Header(None)):await authorize(authorization);return {"results":divergences()}
+@app.post("/v1/parallel/reconcile")
+async def parallel_reconcile(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return reconcile_pair(str(body.get("message_id") or ""),body.get("legacy") or {},body.get("modern") or {},str(body.get("legal_source") or "legacy"))
+@app.post("/v1/parallel/authority")
+async def parallel_authority(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return set_authority(str(body.get("route") or "*"),str(body.get("source") or "legacy"))
+@app.post("/v1/parallel/read-slice")
+async def parallel_slice(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return set_read_slice(str(body.get("route") or "*"),int(body.get("modern_percent") or 0))
+@app.get("/v1/parallel/read-route")
+async def parallel_read_route(route:str,key:str,authorization:str|None=Header(None)):
+    await authorize(authorization);return {"route":route,"key":key,"source":choose_read(route,key),"legal_authority":authority(route)}
+@app.post("/v1/parallel/lock")
+async def parallel_lock(body:dict,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);owner=str(principal.get("id") or "service");key=str(body.get("record_key") or "")
+    if not key:raise HTTPException(422,"record_key_required")
+    ok=acquire(key,owner,int(body.get("ttl") or 30))
+    if not ok:raise HTTPException(409,"record_locked")
+    return {"locked":True,"record_key":key,"owner":owner}
+@app.delete("/v1/parallel/lock/{record_key}")
+async def parallel_unlock(record_key:str,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);return {"released":release(record_key,str(principal.get("id") or "service"))}
+@app.get("/v1/parallel/status")
+async def parallel_status(authorization:str|None=Header(None)):
+    await authorize(authorization);return {"wal_records":len(wal_status(1000)),"recent_divergence":divergences(100),"locks":lock_state()}
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
