@@ -8,7 +8,7 @@ def legacy_to_modern(raw):
     try:dob_iso=datetime.datetime.strptime(dob,"%Y%m%d").date().isoformat();dob_valid=True
     except ValueError:dob_iso=None;dob_valid=False
     parts=[p.strip() for p in addr.split(",") if p.strip()]
-    return {"legacy_reference_id":sys_id,"national_id_hash":hashlib.sha256(nat.encode()).hexdigest(),"raw_national_id":nat,
+    return {"legacy_reference_id":sys_id,"national_id_hash":hashlib.sha256(nat.encode()).hexdigest(),
       "family_name":sur,"given_names":giv,"date_of_birth":dob_iso,"status":status,
       "address":{"street_address":parts[0] if parts else None,"locality":parts[1] if len(parts)>1 else None},
       "metadata":{"dob_valid":dob_valid,"address_parse_confidence":"heuristic","source_encoding":"cp500"}}
