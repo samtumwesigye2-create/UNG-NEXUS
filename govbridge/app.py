@@ -23,6 +23,8 @@ from zero_trust import enforce as zero_trust_enforce
 from compliance_audit import signed_event,export as export_compliance_event
 from cutover import state as cutover_state,route as cutover_route,record_failure as cutover_failure,promote as cutover_promote,eligible_for_freeze
 from archive import archive_records,query as archive_query,catalog as archive_catalog
+from sandbox import create_session,require as require_sandbox,seed as sandbox_seed,reset as sandbox_reset,state as sandbox_state,update as sandbox_update,set_fault,scrub,BANNER
+from terminal_emulator import modern_to_terminal,terminal_to_modern
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -270,5 +272,33 @@ async def query_archive(sector:str,body:dict,authorization:str|None=Header(None)
 @app.get("/v1/archive")
 async def list_archives(authorization:str|None=Header(None)):await authorize(authorization);return {"archives":archive_catalog()}
 
+@app.post("/v1/sandbox/session",status_code=201)
+async def sandbox_session(body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);return create_session(str(p.get("id") or "service"),str(body.get("scenario") or "default"))
+def _sandbox_guard(sid,p):
+    if not require_sandbox(sid,str(p.get("id") or "service")):raise HTTPException(403,"invalid_sandbox_session")
+@app.post("/v1/sandbox/seed")
+async def sandbox_seed_data(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);records=scrub(body.get("records") or []);return sandbox_seed(str(body.get("scenario") or "default"),records)
+@app.post("/v1/sandbox/{sid}/reset")
+async def sandbox_reset_state(sid:str,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return {"banner":BANNER,"state":sandbox_reset(sid)}
+@app.get("/v1/sandbox/{sid}/state")
+async def sandbox_get_state(sid:str,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return {"banner":BANNER,"state":sandbox_state(sid)}
+@app.post("/v1/sandbox/{sid}/modern-action")
+async def sandbox_modern(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);fields=body.get("fields") or {};mapping=body.get("mapping") or {}
+    for k,v in fields.items():sandbox_update(sid,k,v)
+    return {"banner":BANNER,"modern":sandbox_state(sid),"legacy_screen":modern_to_terminal(fields,mapping)}
+@app.post("/v1/sandbox/{sid}/legacy-action")
+async def sandbox_legacy(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);fields=terminal_to_modern(body.get("buffer") or {},body.get("mapping") or {})
+    for k,v in fields.items():sandbox_update(sid,k,v)
+    return {"banner":BANNER,"modern_fields":fields,"state":sandbox_state(sid)}
+@app.post("/v1/sandbox/{sid}/simulate")
+async def sandbox_simulate(sid:str,body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);_sandbox_guard(sid,p);return {"banner":BANNER,"simulation":set_fault(sid,body.get("delay_seconds") or 0,body.get("failure"))}
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
