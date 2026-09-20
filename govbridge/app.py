@@ -21,6 +21,8 @@ from recovery import replay_one
 from compliance import posture as compliance_posture
 from zero_trust import enforce as zero_trust_enforce
 from compliance_audit import signed_event,export as export_compliance_event
+from cutover import state as cutover_state,route as cutover_route,record_failure as cutover_failure,promote as cutover_promote,eligible_for_freeze
+from archive import archive_records,query as archive_query,catalog as archive_catalog
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -240,5 +242,33 @@ async def compliance(authorization:str|None=Header(None)):
 async def compliance_event(body:dict,authorization:str|None=Header(None)):
     principal=await authorize(authorization);event=signed_event({**body,"principal_id":principal.get("id")});await export_compliance_event(event);return {"accepted":True,"digest":event["digest"],"signed":bool(event["signature"])}
 
+@app.get("/v1/cutover/{sector}")
+async def get_cutover(sector:str,authorization:str|None=Header(None)):
+    await authorize(authorization);return cutover_state(sector)
+@app.get("/v1/cutover/{sector}/route")
+async def get_cutover_route(sector:str,key:str,authorization:str|None=Header(None)):
+    await authorize(authorization);return {"sector":sector,"key":key,"read_from":cutover_route(sector,key),**cutover_state(sector)}
+@app.post("/v1/cutover/{sector}/promote")
+async def promote_cutover(sector:str,body:dict,authorization:str|None=Header(None)):
+    principal=await authorize(authorization)
+    try:s=cutover_promote(sector,str(body.get("phase") or "shadow"),body.get("modern_percent"))
+    except ValueError as ex:raise HTTPException(422,str(ex))
+    audit({"action":"cutover_promotion","sector":sector,"state":s,"principal":principal.get("id")});return s
+@app.post("/v1/cutover/{sector}/failure")
+async def fail_cutover(sector:str,body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return cutover_failure(sector,str(body.get("reason") or "unspecified"))
+@app.get("/v1/cutover/{sector}/freeze-eligibility")
+async def freeze_eligibility(sector:str,days:int=30,authorization:str|None=Header(None)):
+    await authorize(authorization);return {"sector":sector,"eligible":eligible_for_freeze(sector,days),"required_stability_days":days,**cutover_state(sector)}
+
+@app.post("/v1/archive/{sector}",status_code=201)
+async def create_archive(sector:str,body:dict,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);result=archive_records(sector,body.get("records") or []);audit({"action":"legacy_archive_created","sector":sector,"archive":result,"principal":principal.get("id")});return result
+@app.post("/v1/archive/{sector}/query")
+async def query_archive(sector:str,body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return {"sector":sector,"results":archive_query(sector,body.get("where") or {})}
+@app.get("/v1/archive")
+async def list_archives(authorization:str|None=Header(None)):await authorize(authorization);return {"archives":archive_catalog()}
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
