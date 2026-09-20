@@ -6,7 +6,7 @@ import json, os, time, psycopg, urllib.error, urllib.request
 from psycopg.rows import dict_row
 from interop import NexusEnvelope, connectors
 from pulsar_transport import relay as relay_to_pulsar
-app=FastAPI(title='UNG-NEXUS',version='0.6.0');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
+app=FastAPI(title='UNG-NEXUS',version='0.6.1');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');GOVBRIDGE_BASE_URL=os.getenv('GOVBRIDGE_BASE_URL','').rstrip('/');DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 def auth(permission,authorization):
  if not authorization or not authorization.lower().startswith('bearer '):raise HTTPException(401,'JANUS bearer token required')
  req=urllib.request.Request(JANUS_BASE_URL+'/v1/auth/introspect',data=b'',method='POST',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.6.0'})
@@ -46,7 +46,7 @@ class MessageIn(BaseModel):source_system:str;target_system:str;message_type:str;
 @app.get('/')
 def root():return {'service':'UNG-NEXUS','status':'online','version':'0.6.0','transport':'UNG-PULSAR' if PULSAR_BASE_URL else 'direct','acceptance':'/v1/acceptance/status','docs':'/docs'}
 @app.get('/health')
-def health():return {'status':'ok','service':'UNG-NEXUS','version':'0.6.0','connectors':len(connectors._connectors),'pulsar_transport':bool(PULSAR_BASE_URL)}
+def health():return {'status':'ok','service':'UNG-NEXUS','version':'0.6.1','connectors':len(connectors._connectors),'pulsar_transport':bool(PULSAR_BASE_URL),'govbridge_configured':bool(GOVBRIDGE_BASE_URL)}
 @app.get('/ready')
 def ready():
  try:
@@ -54,7 +54,7 @@ def ready():
   return {'status':'ready','database':'connected','janus':JANUS_BASE_URL,'pulsar':PULSAR_BASE_URL or None,'pulsar_configured':bool(PULSAR_BASE_URL),'apollo_registered':bool(APOLLO_BASE_URL),'apollo_acceptance':probe}
  except Exception:return {'status':'degraded','database':'unavailable','janus':JANUS_BASE_URL,'pulsar':PULSAR_BASE_URL or None,'pulsar_configured':bool(PULSAR_BASE_URL),'apollo_registered':False,'apollo_acceptance':None}
 @app.get('/v1/system')
-def system():return {'system_id':'UNG-NEXUS','domain':'integration-interoperability','capabilities':['endpoint-registry','message-routing','inbound-gateway','pulsar-transport','outbound-http-delivery','integration-audit','standard-envelope','connector-registry','vendor-adapters','idempotent-inbound','idempotent-outbound','retry','janus-bearer-auth','apollo-route','apollo-acceptance-probe']}
+def system():return {'system_id':'UNG-NEXUS','domain':'integration-interoperability','capabilities':['endpoint-registry','message-routing','inbound-gateway','pulsar-transport','outbound-http-delivery','integration-audit','standard-envelope','connector-registry','vendor-adapters','idempotent-inbound','idempotent-outbound','retry','janus-bearer-auth','apollo-route','apollo-acceptance-probe','uganda-government-bridge']}
 @app.get('/v1/acceptance/status')
 def acceptance_status():
  try:
@@ -112,7 +112,10 @@ def route_message(b:MessageIn,authorization:str|None=Header(None)):
   adapter=connectors.get(b.connector)
   if not adapter:raise HTTPException(404,'connector_not_found_or_disabled')
   result=adapter.send(env);return {'message_id':d['message_id'],'connector':b.connector,'result':result,'envelope':d}
- if PULSAR_BASE_URL:
+ if b.target_system.startswith('GOU-'):
+  if not GOVBRIDGE_BASE_URL:status='unroutable';attempts=0;code=None;error='govbridge_not_configured';delivered_at=None
+  else:ok,attempts,code,error=deliver(GOVBRIDGE_BASE_URL+'/v1/bridge',d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
+ elif PULSAR_BASE_URL:
   ok,attempts,code,error,result=relay_to_pulsar(d,authorization);status='relayed' if ok else 'failed';delivered_at=utcnow() if ok else None
  else:
   with conn() as c:target=c.execute('SELECT * FROM nexus_endpoints WHERE system_id=%s AND enabled=true ORDER BY created_at DESC LIMIT 1',(b.target_system,)).fetchone()
