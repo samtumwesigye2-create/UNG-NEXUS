@@ -57,6 +57,8 @@ app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 async def initialize_persistence_on_startup():
     if persistence_configured():
         persistence_init()
+        result=persistence_self_test()
+        print(f"PERSISTENCE_SELF_TEST ok={result.get('ok')} write={result.get('write')} readback={result.get('readback')} cleanup={result.get('cleanup')}",flush=True)
 
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
 SHADOW_TARGET=os.getenv("GOVBRIDGE_SHADOW_URL","").rstrip("/")
