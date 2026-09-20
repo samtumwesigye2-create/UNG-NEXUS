@@ -49,7 +49,7 @@ from terminal_gateway import compile_actions
 from network_policy import classify as network_classify,enforce as network_enforce,matrix as network_matrix
 from hybrid_backbone import configure_path,health as backbone_health,selected as backbone_selected,posture as backbone_posture
 from network_spillover import route as spillover_route,items as spillover_items
-from persistent_state import init as persistence_init,configured as persistence_configured,self_test as persistence_self_test
+from persistent_state import init as persistence_init,configured as persistence_configured,self_test as persistence_self_test,failsafe_self_test
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 
@@ -59,6 +59,8 @@ async def initialize_persistence_on_startup():
         persistence_init()
         result=persistence_self_test()
         print(f"PERSISTENCE_SELF_TEST ok={result.get('ok')} write={result.get('write')} readback={result.get('readback')} cleanup={result.get('cleanup')}",flush=True)
+        fs=failsafe_self_test()
+        print(f"FAILSAFE_PERSISTENCE_SELF_TEST ok={fs.get('ok')} dlq_write_read={fs.get('dlq_write_read')} manual_hold_write_read={fs.get('manual_hold_write_read')} cleanup={fs.get('cleanup')}",flush=True)
 
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
 SHADOW_TARGET=os.getenv("GOVBRIDGE_SHADOW_URL","").rstrip("/")
