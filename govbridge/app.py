@@ -18,6 +18,9 @@ from twophase import two_phase
 from batch_etl import delta as etl_delta
 from failsafe import classify as risk_classify,nonce,burn,burned,dlq_add,dlq,pending,manual_hold,holds
 from recovery import replay_one
+from compliance import posture as compliance_posture
+from zero_trust import enforce as zero_trust_enforce
+from compliance_audit import signed_event,export as export_compliance_event
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -193,6 +196,8 @@ async def sync_policy(authorization:str|None=Header(None)):
 async def failsafe_execute(message:BridgeMessage,authorization:str|None=Header(None)):
     principal=await authorize(authorization);throttle(principal)
     payload=translate(message.payload);sector=sector_for(message.message_type,payload);risk=risk_classify(sector,payload);n=nonce(message.message_id,payload)
+    ztok,ztreason=zero_trust_enforce(principal,payload,risk)
+    if not ztok:raise HTTPException(403,ztreason)
     if burned(n):raise HTTPException(409,"transaction_nonce_invalidated")
     record_key=str(payload.get("_record_key") or message.message_id);owner=str(principal.get("id") or "service")
     env={**message.model_dump(),"payload":payload,"failsafe":{"sector":sector,**risk,"nonce":n,"received_at_ns":time.time_ns()}}
@@ -228,5 +233,12 @@ async def failsafe_policy(authorization:str|None=Header(None)):
     from failsafe import TIERS
     return TIERS
 
+@app.get("/v1/compliance/posture")
+async def compliance(authorization:str|None=Header(None)):
+    await authorize(authorization);return compliance_posture()
+@app.post("/v1/compliance/event",status_code=202)
+async def compliance_event(body:dict,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);event=signed_event({**body,"principal_id":principal.get("id")});await export_compliance_event(event);return {"accepted":True,"digest":event["digest"],"signed":bool(event["signature"])}
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
