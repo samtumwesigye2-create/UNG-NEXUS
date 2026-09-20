@@ -10,7 +10,7 @@ def _field(v,n,align="left"):
 def pack_comarea(body):
     d=body.get("comarea_data") or {};p=d.get("payload_fields") or {}
     # Strict 75-byte approved COMAREA profile. No arbitrary copybook execution.
-    bal=str(p.get("balance_delta","")).replace("+","").replace("-","")
+    bal=str(p.get("balance_delta","")).strip()\n    if bal and not bal.isdigit():raise ValueError("balance_delta_profile_undefined_for_signed_or_non_numeric_values")\n    if len(bal)>10:raise ValueError("balance_delta_too_long")
     buf=b"".join([_field(body.get("transaction_code"),4),_field(body.get("operator_terminal_id"),8),
       _field(d.get("citizen_id"),9),_field(d.get("sector_code"),3),_field(d.get("action_type"),1),
       _field(p.get("family_name"),40),_field(bal,10,"right")])
