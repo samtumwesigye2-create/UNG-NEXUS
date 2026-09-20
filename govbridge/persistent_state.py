@@ -9,7 +9,10 @@ CREATE TABLE IF NOT EXISTS govbridge.divergence_holds(entity_id TEXT PRIMARY KEY
 CREATE TABLE IF NOT EXISTS govbridge.reconciliation_ledger(id BIGSERIAL PRIMARY KEY,entity_id TEXT NOT NULL,event JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS govbridge.idempotency_keys(message_id TEXT PRIMARY KEY,payload_hash CHAR(64) NOT NULL,result JSONB,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS spillover_pending_idx ON govbridge.spillover_queue(state,created_at);
-CREATE INDEX IF NOT EXISTS reconciliation_entity_idx ON govbridge.reconciliation_ledger(entity_id,created_at DESC);"""
+CREATE INDEX IF NOT EXISTS reconciliation_entity_idx ON govbridge.reconciliation_ledger(entity_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS govbridge.failsafe_dlq(id BIGSERIAL PRIMARY KEY,message_id TEXT,envelope JSONB NOT NULL,error TEXT,state TEXT NOT NULL DEFAULT 'pending',created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS govbridge.manual_holds(id BIGSERIAL PRIMARY KEY,item JSONB NOT NULL,reason TEXT,state TEXT NOT NULL DEFAULT 'manual-hold',created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS failsafe_dlq_state_idx ON govbridge.failsafe_dlq(state,created_at);"""
 def configured():return bool(os.getenv("DATABASE_URL")) and psycopg is not None
 def init():
  if not configured():return {"configured":False,"initialized":False}
@@ -71,3 +74,34 @@ def claim_idempotency(message_id,payload_hash="0"*64):
  with psycopg.connect(os.environ["DATABASE_URL"]) as con:
   with con.cursor() as cur:
    cur.execute("INSERT INTO govbridge.idempotency_keys(message_id,payload_hash) VALUES(%s,%s) ON CONFLICT(message_id) DO NOTHING RETURNING message_id",(message_id,payload_hash));return cur.fetchone() is not None
+
+def add_failsafe_dlq(envelope,error):
+ if not configured():return None
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("INSERT INTO govbridge.failsafe_dlq(message_id,envelope,error) VALUES(%s,%s::jsonb,%s) RETURNING id,created_at",(str(envelope.get("message_id") or ""),json.dumps(envelope),str(error)));r=cur.fetchone()
+ return {"sequence":r[0],"message_id":envelope.get("message_id"),"envelope":envelope,"error":str(error),"state":"pending","queued_at":r[1].timestamp()}
+def failsafe_dlq_items(limit=100):
+ if not configured():return []
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("SELECT id,message_id,envelope,error,state,created_at FROM govbridge.failsafe_dlq ORDER BY id DESC LIMIT %s",(min(max(int(limit),1),1000),));rows=cur.fetchall()
+ return [{"sequence":r[0],"message_id":r[1],"envelope":r[2],"error":r[3],"state":r[4],"queued_at":r[5].timestamp()} for r in reversed(rows)]
+def failsafe_pending(message_id):
+ if not configured():return None
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("SELECT id,message_id,envelope,error,state,created_at FROM govbridge.failsafe_dlq WHERE message_id=%s AND state='pending' ORDER BY id DESC LIMIT 1",(message_id,));r=cur.fetchone()
+ return None if not r else {"sequence":r[0],"message_id":r[1],"envelope":r[2],"error":r[3],"state":r[4],"queued_at":r[5].timestamp()}
+def add_manual_hold(item,reason):
+ if not configured():return None
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("INSERT INTO govbridge.manual_holds(item,reason) VALUES(%s::jsonb,%s) RETURNING id,created_at",(json.dumps(item),str(reason)));r=cur.fetchone()
+ return {"id":r[0],"item":item,"reason":str(reason),"held_at":r[1].timestamp(),"state":"manual-hold"}
+def manual_hold_items(limit=100):
+ if not configured():return []
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("SELECT id,item,reason,state,created_at FROM govbridge.manual_holds ORDER BY id DESC LIMIT %s",(min(max(int(limit),1),1000),));rows=cur.fetchall()
+ return [{"id":r[0],"item":r[1],"reason":r[2],"state":r[3],"held_at":r[4].timestamp()} for r in reversed(rows)]
