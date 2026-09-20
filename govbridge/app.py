@@ -16,6 +16,8 @@ from fanout import fanout
 from multispeed import speed_for,stamp,should_apply,enqueue_async,enqueue_batch,queues as speed_queues,policy as speed_policy
 from twophase import two_phase
 from batch_etl import delta as etl_delta
+from failsafe import classify as risk_classify,nonce,burn,burned,dlq_add,dlq,pending,manual_hold,holds
+from recovery import replay_one
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -187,5 +189,44 @@ async def batch_delta(body:dict,authorization:str|None=Header(None)):
 async def sync_policy(authorization:str|None=Header(None)):
     await authorize(authorization);return {"routing_policy":speed_policy(),"queues":speed_queues(),"paths":["synchronous","asynchronous","batch"]}
 
+@app.post("/v1/failsafe/execute",status_code=202)
+async def failsafe_execute(message:BridgeMessage,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);throttle(principal)
+    payload=translate(message.payload);sector=sector_for(message.message_type,payload);risk=risk_classify(sector,payload);n=nonce(message.message_id,payload)
+    if burned(n):raise HTTPException(409,"transaction_nonce_invalidated")
+    record_key=str(payload.get("_record_key") or message.message_id);owner=str(principal.get("id") or "service")
+    env={**message.model_dump(),"payload":payload,"failsafe":{"sector":sector,**risk,"nonce":n,"received_at_ns":time.time_ns()}}
+    if risk["failure"]=="fail-closed":
+        if not acquire(record_key,owner,120):raise HTTPException(409,"record_frozen_by_active_transaction")
+        result=await two_phase(env,authorization)
+        if not result.get("committed"):
+            burn(n)
+            audit({"action":"fail_closed","message_id":message.message_id,"record_key":record_key,"nonce_invalidated":True,"result":result})
+            # Lock intentionally remains until authorized operator resolution.
+            raise HTTPException(503,{"failure_mode":"fail-closed","record_frozen":True,"nonce_invalidated":True,"result":result})
+        release(record_key,owner)
+        return {"accepted":True,"failure_mode":"fail-closed","committed":True,"result":result}
+    result=await fanout(env,authorization)
+    if result["legacy"].get("ok") and result["modern"].get("ok"):
+        return {"accepted":True,"failure_mode":"degrade-gracefully","state":"confirmed","fanout":result}
+    item=dlq_add(mask(env),{"legacy":result["legacy"],"modern":result["modern"]})
+    audit({"action":"degraded_to_dlq","message_id":message.message_id,"sequence":item["sequence"],"sector":sector})
+    return {"accepted":True,"failure_mode":"degrade-gracefully","state":"processing","pending_legacy_confirmation":not result["legacy"].get("ok"),"dlq_sequence":item["sequence"],"fanout":result}
+
+@app.get("/v1/failsafe/dlq")
+async def failsafe_dlq(authorization:str|None=Header(None)):await authorize(authorization);return {"results":dlq()}
+@app.get("/v1/failsafe/pending/{message_id}")
+async def failsafe_pending(message_id:str,authorization:str|None=Header(None)):await authorize(authorization);return pending(message_id) or {"message_id":message_id,"state":"not_pending"}
+@app.post("/v1/failsafe/manual-hold")
+async def failsafe_hold(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return manual_hold(body.get("item") or {},str(body.get("reason") or "operator-review"))
+@app.get("/v1/failsafe/manual-hold")
+async def failsafe_holds(authorization:str|None=Header(None)):await authorize(authorization);return {"results":holds()}
+@app.get("/v1/failsafe/policy")
+async def failsafe_policy(authorization:str|None=Header(None)):
+    await authorize(authorization)
+    from failsafe import TIERS
+    return TIERS
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
