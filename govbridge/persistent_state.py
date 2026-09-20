@@ -7,7 +7,7 @@ DDL="""CREATE SCHEMA IF NOT EXISTS govbridge;
 CREATE TABLE IF NOT EXISTS govbridge.spillover_queue(id UUID PRIMARY KEY,segment TEXT NOT NULL,envelope JSONB NOT NULL,state TEXT NOT NULL DEFAULT 'pending',created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS govbridge.divergence_holds(entity_id TEXT PRIMARY KEY,tier INT NOT NULL,legacy JSONB NOT NULL,modern JSONB NOT NULL,field_name TEXT,state TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS govbridge.reconciliation_ledger(id BIGSERIAL PRIMARY KEY,entity_id TEXT NOT NULL,event JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-CREATE TABLE IF NOT EXISTS govbridge.idempotency_keys(message_id TEXT PRIMARY KEY,payload_hash CHAR(64) NOT NULL,result JSONB,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS govbridge.idempotency_keys(message_id TEXT PRIMARY KEY,payload_hash CHAR(64) NOT NULL,result JSONB,created_at TIMESTAMPTZ NOT NULL DEFAULT now());\nCREATE TABLE IF NOT EXISTS govbridge.audit_ledger(id BIGSERIAL PRIMARY KEY,event JSONB NOT NULL,previous_hash CHAR(64) NOT NULL,record_hash CHAR(64) UNIQUE NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS spillover_pending_idx ON govbridge.spillover_queue(state,created_at);
 CREATE INDEX IF NOT EXISTS reconciliation_entity_idx ON govbridge.reconciliation_ledger(entity_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS govbridge.failsafe_dlq(id BIGSERIAL PRIMARY KEY,message_id TEXT,envelope JSONB NOT NULL,error TEXT,state TEXT NOT NULL DEFAULT 'pending',attempt_count INT NOT NULL DEFAULT 0,next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),last_attempt_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
@@ -69,11 +69,39 @@ def reconciliation_events(limit=1000):
  if not configured():return []
  with psycopg.connect(os.environ["DATABASE_URL"]) as con:
   with con.cursor() as cur:cur.execute("SELECT event FROM govbridge.reconciliation_ledger ORDER BY id DESC LIMIT %s",(min(max(int(limit),1),5000),));return [r[0] for r in reversed(cur.fetchall())]
-def claim_idempotency(message_id,payload_hash="0"*64):
+def claim_idempotency(message_id,payload_hash):
  if not configured():return None
  with psycopg.connect(os.environ["DATABASE_URL"]) as con:
   with con.cursor() as cur:
-   cur.execute("INSERT INTO govbridge.idempotency_keys(message_id,payload_hash) VALUES(%s,%s) ON CONFLICT(message_id) DO NOTHING RETURNING message_id",(message_id,payload_hash));return cur.fetchone() is not None
+   cur.execute("INSERT INTO govbridge.idempotency_keys(message_id,payload_hash) VALUES(%s,%s) ON CONFLICT(message_id) DO NOTHING RETURNING message_id",(message_id,payload_hash))
+   if cur.fetchone() is not None:return True
+   cur.execute("SELECT payload_hash FROM govbridge.idempotency_keys WHERE message_id=%s",(message_id,));row=cur.fetchone()
+   if row and row[0].strip()!=payload_hash:raise ValueError("idempotency_key_payload_conflict")
+   return False
+def cleanup_idempotency(ttl_seconds=86400):
+ if not configured():return 0
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:
+   cur.execute("DELETE FROM govbridge.idempotency_keys WHERE created_at < now()-(%s*interval '1 second')",(max(3600,int(ttl_seconds)),));return cur.rowcount
+def append_audit(event,previous_hash,record_hash):
+ if not configured():return False
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:cur.execute("INSERT INTO govbridge.audit_ledger(event,previous_hash,record_hash) VALUES(%s::jsonb,%s,%s) ON CONFLICT(record_hash) DO NOTHING",(json.dumps(event),previous_hash,record_hash))
+ return True
+def audit_events(limit=100):
+ if not configured():return []
+ with psycopg.connect(os.environ["DATABASE_URL"]) as con:
+  with con.cursor() as cur:cur.execute("SELECT event FROM govbridge.audit_ledger ORDER BY id DESC LIMIT %s",(min(max(int(limit),1),1000),));return [r[0] for r in reversed(cur.fetchall())]
+def advisory_lock(record_key):
+ if not configured():return None
+ con=psycopg.connect(os.environ["DATABASE_URL"]);cur=con.cursor();cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s,0))",(str(record_key),))
+ if cur.fetchone()[0]:return (con,cur)
+ cur.close();con.close();return False
+def advisory_unlock(handle,record_key):
+ if not handle:return False
+ con,cur=handle
+ try:cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s,0))",(str(record_key),));ok=cur.fetchone()[0];con.commit();return ok
+ finally:cur.close();con.close()
 
 def add_failsafe_dlq(envelope,error):
  if not configured():return None
