@@ -13,6 +13,9 @@ from finality import reserve,finalize,status as finality_status
 from reconciliation_worker import compare as continuous_compare
 from parallel_run import wal_append,wal_status,mark,divergence,divergences,set_authority,authority,set_read_slice,choose_read,acquire,release,lock_state,reconcile_pair
 from fanout import fanout
+from multispeed import speed_for,stamp,should_apply,enqueue_async,enqueue_batch,queues as speed_queues,policy as speed_policy
+from twophase import two_phase
+from batch_etl import delta as etl_delta
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -155,5 +158,34 @@ async def parallel_unlock(record_key:str,authorization:str|None=Header(None)):
 async def parallel_status(authorization:str|None=Header(None)):
     await authorize(authorization);return {"wal_records":len(wal_status(1000)),"recent_divergence":divergences(100),"locks":lock_state()}
 
+@app.post("/v1/sync/route",status_code=202)
+async def sync_route(message:BridgeMessage,authorization:str|None=Header(None)):
+    principal=await authorize(authorization);throttle(principal)
+    payload=translate(message.payload);sector=sector_for(message.message_type,payload);speed=speed_for(sector,payload)
+    record_key=str(payload.get("_record_key") or message.message_id)
+    version=stamp(record_key,message.source_system,speed,payload)
+    envelope={**message.model_dump(),"payload":payload,"sync":{"speed":speed,"sector":sector,"version":version}}
+    wal_append(mask(envelope))
+    if speed=="synchronous":
+        result=await two_phase(envelope,authorization)
+        audit({"action":"sync_2pc","message_id":message.message_id,"sector":sector,"result":result,"principal":principal.get("id")})
+        if not result.get("committed"):raise HTTPException(503,{"sync":"synchronous","result":result})
+        return {"accepted":True,"sync":"synchronous","result":result,"version":version}
+    if speed=="asynchronous":
+        depth=enqueue_async(mask(envelope));audit({"action":"sync_async_queued","message_id":message.message_id,"queue_depth":depth,"sector":sector})
+        return {"accepted":True,"sync":"asynchronous","queue_depth":depth,"version":version}
+    depth=enqueue_batch(mask(envelope));audit({"action":"sync_batch_queued","message_id":message.message_id,"queue_depth":depth,"sector":sector})
+    return {"accepted":True,"sync":"batch","queue_depth":depth,"version":version}
+
+@app.post("/v1/sync/version/check")
+async def version_check(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);ok,reason=should_apply(str(body.get("record_key") or ""),body.get("incoming") or {});return {"apply":ok,"reason":reason}
+@app.post("/v1/sync/batch/delta")
+async def batch_delta(body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return etl_delta(str(body.get("dataset") or "default"),body.get("rows") or [])
+@app.get("/v1/sync/policy")
+async def sync_policy(authorization:str|None=Header(None)):
+    await authorize(authorization);return {"routing_policy":speed_policy(),"queues":speed_queues(),"paths":["synchronous","asynchronous","batch"]}
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
