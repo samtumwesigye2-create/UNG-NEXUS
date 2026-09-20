@@ -30,6 +30,10 @@ from sandbox_peripherals import emulate as emulate_peripheral
 from sandbox_cells import provision as provision_cell,destroy as destroy_cell,stats as cell_stats
 from synthetic_weaver import generate as generate_synthetic,templates as scenario_templates
 from rollout import set_phase,current as rollout_current
+from elastic_ring import configure as ring_configure,telemetry_scale,drain as ring_drain,enqueue as ring_enqueue,admit as ring_admit,status as ring_status
+from edge_cache import publish_asset,mount_reference,manifest as cache_manifest
+from migration_velocity import plan as velocity_plan
+from stress_vault import create as stress_create,update as stress_update,runs as stress_runs
 
 app=FastAPI(title="UNG-GOVBRIDGE",version="1.1.0")
 JANUS_BASE_URL=os.getenv("JANUS_BASE_URL","https://ung-iam-production.up.railway.app").rstrip("/")
@@ -351,5 +355,33 @@ async def sandbox_rollout_set(body:dict,authorization:str|None=Header(None)):
     try:return set_phase(int(body.get("phase") or 1))
     except ValueError as ex:raise HTTPException(422,str(ex))
 
+@app.post("/v1/sandbox/ring/{region}/configure")
+async def ring_cfg(region:str,body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return ring_configure(region,str(body.get("timezone") or "UTC"),int(body.get("work_start") or 8),int(body.get("work_end") or 17),int(body.get("min_capacity") or 10),int(body.get("max_capacity") or 1000),int(body.get("warmup_minutes") or 30))
+@app.post("/v1/sandbox/ring/{region}/scale")
+async def ring_scale(region:str,body:dict,authorization:str|None=Header(None)):
+    await authorize(authorization);return telemetry_scale(region,int(body.get("active_sessions") or 0),float(body.get("p95_reflection_ms") or 0),int(body.get("queue_depth") or 0))
+@app.post("/v1/sandbox/ring/{region}/drain")
+async def ring_drain_api(region:str,authorization:str|None=Header(None)):await authorize(authorization);return ring_drain(region)
+@app.post("/v1/sandbox/waiting-room")
+async def waiting_room(body:dict,authorization:str|None=Header(None)):
+    p=await authorize(authorization);return ring_enqueue(str(p.get("id") or "service"),str(body.get("region") or "central"))
+@app.post("/v1/sandbox/waiting-room/admit")
+async def waiting_admit(body:dict,authorization:str|None=Header(None)):await authorize(authorization);return {"admitted":ring_admit(int(body.get("limit") or 100))}
+@app.get("/v1/sandbox/ring")
+async def ring_get(authorization:str|None=Header(None)):await authorize(authorization);return ring_status()
+@app.post("/v1/sandbox/cache/{region}/asset")
+async def cache_asset(region:str,body:dict,authorization:str|None=Header(None)):await authorize(authorization);return publish_asset(region,str(body["key"]),str(body["digest"]))
+@app.post("/v1/sandbox/cache/reference")
+async def cache_reference(body:dict,authorization:str|None=Header(None)):await authorize(authorization);return mount_reference(str(body["name"]),str(body["version"]),str(body["digest"]))
+@app.get("/v1/sandbox/cache/{region}")
+async def cache_get(region:str,authorization:str|None=Header(None)):await authorize(authorization);return cache_manifest(region)
+@app.get("/v1/sandbox/migration-velocity")
+async def migration_velocity(authorization:str|None=Header(None)):await authorize(authorization);return velocity_plan()
+@app.post("/v1/sandbox/stress-vault",status_code=201)
+async def stress_new(body:dict,authorization:str|None=Header(None)):await authorize(authorization);return stress_create(int(body.get("target_concurrency") or 500000),str(body.get("scenario") or "mixed-failure"))
+@app.get("/v1/sandbox/stress-vault")
+async def stress_list(authorization:str|None=Header(None)):await authorize(authorization);return {"runs":stress_runs()}
+
 @app.get("/v1/system")
-def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["hyperscale-cellular-sandbox","ephemeral-session-cells","regional-session-sharding","automatic-cell-expiration","paged-algorithmic-synthetic-data","scenario-template-engine","three-phase-training-rollout","unified-sandbox-edge","on-prem-training-node-registry","cloud-sandbox-portal","sandbox-only-ztna-context","dummy-peripheral-emulation","room-and-session-reset","training-performance-analytics","isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
+def system():return {"system_id":"UNG-GOVBRIDGE","version":"1.1.0","capabilities":["dynamic-elastic-ring","scheduled-capacity-ring","telemetry-driven-scaling","graceful-cluster-draining","branded-waiting-room-api","regional-edge-cache-manifest","read-only-reference-shards","migration-velocity-plan","synthetic-stress-test-vault","hyperscale-cellular-sandbox","ephemeral-session-cells","regional-session-sharding","automatic-cell-expiration","paged-algorithmic-synthetic-data","scenario-template-engine","three-phase-training-rollout","unified-sandbox-edge","on-prem-training-node-registry","cloud-sandbox-portal","sandbox-only-ztna-context","dummy-peripheral-emulation","room-and-session-reset","training-performance-analytics","isolated-dual-ui-training-sandbox","synthetic-data-scrubbing","sandbox-session-routing","persistent-context-banner","legacy-terminal-emulator","modern-terminal-field-mapping","instant-sandbox-reset","delay-and-failure-simulation","traffic-cutover-framework","shadow-to-live-promotion","deterministic-canary-routing","sector-read-write-cutover","legacy-read-only-freeze","reverse-sync-ready","stability-window-gating","historical-archive-facade","federal-control-target-framework","zero-trust-policy-enforcement-point","per-request-device-posture","high-assurance-tier1-auth","sector-microsegmentation","external-hsm-interface","worm-audit-export","siem-conmon-export","adaptive-fail-safe-circuit","risk-classification-engine","fail-closed-tier","degrade-gracefully-tier","nonce-invalidation","durable-dlq","pending-legacy-confirmation","manual-hold-vault","three-speed-sync-engine","metadata-driven-sync-routing","two-phase-commit","atomic-prepare-rollback","near-real-time-stream-buffer","batch-delta-etl","vector-clock-versioning","global-epoch-ordering","last-write-wins-speed-override","cross-speed-reconciliation","parallel-run-migration","dual-write-fanout","write-ahead-log","independent-multi-commit","read-slicing","source-of-truth-toggle","distributed-record-locking","nanosecond-ordering","divergence-alerting","replay-ready-wal","distributed-integration-fabric","unified-governance-gateway","dynamic-sector-routing","bi-directional-sync","strict-transaction-finality","idempotency","schema-translation","fixed-width-import","ebcdic-import","csv-import","circuit-breaker","fallback-queue","janus-federated-auth","immutable-hash-chain-audit","pii-masking","api-gateway","rate-limiting","message-buffer","shadow-mirroring","continuous-hash-reconciliation","authoritative-source-conflict-resolution","cross-domain-guard-enforcement","sector-policy-profiles","reconciliation","government-adapter-registry","policy-gated-routing","trace-preservation"],"supported_targets":list(AGENCY_ENV)}
