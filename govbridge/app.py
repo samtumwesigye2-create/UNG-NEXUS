@@ -43,7 +43,7 @@ from training_credentials import issue_rs256
 from analytics_aggregator import ingest as analytics_ingest,aggregate_hour,dashboard as analytics_dashboard
 from civil_registry_mapping import legacy_to_modern as civil_legacy_to_modern,modern_to_legacy as civil_modern_to_legacy
 from divergence_playbook import triage as divergence_triage,locked as divergence_locked,diff as divergence_diff,resolve as divergence_resolve,ledger as divergence_ledger
-from mainframe_gateway import pack_comarea,health_stub
+from mainframe_gateway import pack_comarea,health_stub,verify_hmac
 from jcl_gateway import render as render_jcl
 from terminal_gateway import compile_actions
 from network_policy import classify as network_classify,enforce as network_enforce,matrix as network_matrix
@@ -495,13 +495,18 @@ async def divergence_resolve_api(entity_id:str,body:dict,authorization:str|None=
 async def divergence_events(authorization:str|None=Header(None)):await authorize(authorization);return {"events":divergence_ledger()}
 
 @app.post("/api/v1/bridge/mainframe/cics/transaction")
-async def mainframe_cics(body:dict,authorization:str|None=Header(None),x_gov_criticality_tier:str|None=Header(None)):
+async def mainframe_cics(request:Request,authorization:str|None=Header(None),x_gov_criticality_tier:str|None=Header(None),x_gov_bridge_signature:str|None=Header(None)):
     p=await authorize(authorization)
     if x_gov_criticality_tier!="TIER_1_ATOMIC":raise HTTPException(400,"tier1_atomic_required")
+    raw=await request.body()
+    if not verify_hmac(raw,x_gov_bridge_signature):raise HTTPException(401,"mainframe_signature_invalid")
+    try:body=await request.json()
+    except Exception:raise HTTPException(400,"invalid_json")
     try:buf=pack_comarea(body)
     except (ValueError,UnicodeError) as ex:raise HTTPException(422,str(ex))
-    audit({"action":"mainframe_comarea_compiled","correlation_id":body.get("correlation_id"),"principal":p.get("id"),"bytes":len(buf)})
+    audit({"action":"mainframe_comarea_compiled","correlation_id":body.get("correlation_id"),"principal":p.get("id"),"bytes":len(buf),"signature_verified":True})
     return {"state":"compiled-not-submitted","encoding":"cp500","length":len(buf),"comarea_hex":buf.hex(),"connector_required":True}
+
 @app.put("/api/v1/bridge/mainframe/jes/job-submit")
 async def mainframe_jes(body:dict,authorization:str|None=Header(None),x_gov_bridge_job_class:str|None=Header(None)):
     p=await authorize(authorization)
