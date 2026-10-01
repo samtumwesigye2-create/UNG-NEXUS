@@ -1,7 +1,10 @@
 from __future__ import annotations
 import threading
 import storage
-import transport
+try:
+    import transport
+except Exception:
+    transport=None
 
 _stop=threading.Event()
 _thread=None
@@ -9,6 +12,9 @@ _thread=None
 def _loop():
     while not _stop.is_set():
         try:
+            if transport is None:
+                _stop.wait(5.0)
+                continue
             rows=storage.pending_outbox(20)
             for row in rows:
                 result=transport.send(
