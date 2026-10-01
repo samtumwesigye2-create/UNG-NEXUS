@@ -5,13 +5,15 @@ from state import MindState
 import storage
 import uuid
 from cognitive_layers import GlobalWorkspace, SelfModel
+from substrate import SparseEventFabric
+from embodiment import Embodiment
 
 CLAIM_KEYS=("value","status","state","classification","result","present","active")
 
 class MachineMindRuntime:
     def __init__(self):
         self.state=MindState();self.events=deque(maxlen=5000);self.beliefs={};self.goals=[]
-        self.persistence_ready=False;self.last_recall={};self.last_hypotheses=[];self.affect={};self.last_inquiry=None;self.last_action=None;self.workspace=GlobalWorkspace();self.self_model=SelfModel();self.last_self_report={};self.restore()
+        self.persistence_ready=False;self.last_recall={};self.last_hypotheses=[];self.affect={};self.last_inquiry=None;self.last_action=None;self.workspace=GlobalWorkspace();self.self_model=SelfModel();self.substrate=SparseEventFabric();self.embodiment=Embodiment();self.last_self_report={};self.restore()
 
     def restore(self):
         try:
