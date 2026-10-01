@@ -66,7 +66,7 @@ def run_machine_mind_acceptance_probe():
             MACHINE_MIND_BASE_URL + "/v1/nexus/inbound",
             data=json.dumps(payload).encode(),
             method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "UNG-NEXUS/acceptance"},
+            headers={"Content-Type": "application/json", "User-Agent": "UNG-NEXUS/acceptance", "Authorization": "Bearer " + os.getenv("NEXUS_INTERNAL_SERVICE_TOKEN","").strip()},
         )
         with urllib.request.urlopen(req, timeout=8) as response:
             code = int(response.status)
