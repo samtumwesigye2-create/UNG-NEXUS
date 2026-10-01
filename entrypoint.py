@@ -44,6 +44,45 @@ MIDAS_BASE_URL=os.getenv('MIDAS_BASE_URL','').rstrip('/')
 VECTOR_BASE_URL=os.getenv('VECTOR_BASE_URL','').rstrip('/')
 MACHINE_MIND_BASE_URL=os.getenv('MACHINE_MIND_BASE_URL','').rstrip('/')
 
+def run_machine_mind_acceptance_probe():
+    if not MACHINE_MIND_BASE_URL:
+        return
+    payload = {
+        "source_system": "UNG-NEXUS",
+        "target_system": "MACHINE-MIND",
+        "message_type": "system.health",
+        "payload": {"status": "acceptance-test", "source": "UNG-NEXUS"},
+    }
+    code = None
+    status = "failed"
+    error = None
+    try:
+        req = urllib.request.Request(
+            MACHINE_MIND_BASE_URL + "/v1/nexus/inbound",
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "UNG-NEXUS/acceptance"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            code = int(response.status)
+            body = json.loads(response.read().decode() or "{}")
+            status = "passed" if 200 <= code < 300 and body.get("accepted") else "failed"
+    except urllib.error.HTTPError as exc:
+        code = int(exc.code)
+        error = f"http_{exc.code}"
+    except Exception as exc:
+        error = type(exc).__name__
+    print(f"MACHINE_MIND_ACCEPTANCE status={status} code={code} error={error}")
+    try:
+        with nexus.conn() as db:
+            db.execute(
+                "INSERT INTO nexus_acceptance_checks(id,target_system,status,response_code,message_id,error,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                (str(uuid4()), "MACHINE-MIND", status, code, None, error, nexus.utcnow()),
+            )
+    except Exception:
+        pass
+
+
 @app.on_event('startup')
 def register_core_routes():
     routes=[]
@@ -57,3 +96,4 @@ def register_core_routes():
                          VALUES(%s,%s,%s,%s,true,%s)
                          ON CONFLICT(name) DO UPDATE SET base_url=EXCLUDED.base_url,system_id=EXCLUDED.system_id,enabled=true''',
                       (str(uuid4()),name,url,system_id,nexus.utcnow()))
+    run_machine_mind_acceptance_probe()
