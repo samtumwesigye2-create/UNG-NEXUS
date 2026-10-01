@@ -1,5 +1,6 @@
 import json
 import os
+import hmac
 import urllib.error
 import urllib.request
 from uuid import uuid4
@@ -13,6 +14,10 @@ from acceptance_view import router as acceptance_router
 def janus_auth(permission, authorization):
     if not authorization or not authorization.lower().startswith('bearer '):
         raise HTTPException(401, 'JANUS bearer token required')
+    token = authorization.split(' ', 1)[1].strip()
+    internal = os.getenv('NEXUS_INTERNAL_SERVICE_TOKEN','').strip()
+    if internal and hmac.compare_digest(token, internal):
+        return {'id':'internal-service','permissions':['platform:service',permission],'auth_source':'nexus-internal-service-token'}
     req = urllib.request.Request(
         nexus.JANUS_BASE_URL + '/v1/auth/introspect',
         data=b'',
