@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -57,6 +58,19 @@ CREATE TABLE IF NOT EXISTS machine_mind_semantic_memory (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS machine_mind_learning_log (
+    id BIGSERIAL PRIMARY KEY,
+    event_id TEXT,
+    subject TEXT NOT NULL,
+    recalled_count INTEGER NOT NULL DEFAULT 0,
+    contradiction_count INTEGER NOT NULL DEFAULT 0,
+    support_count INTEGER NOT NULL DEFAULT 0,
+    raw_confidence DOUBLE PRECISION NOT NULL,
+    revised_confidence DOUBLE PRECISION NOT NULL,
+    learning_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_machine_mind_events_created
     ON machine_mind_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_machine_mind_events_source_type
@@ -65,6 +79,8 @@ CREATE INDEX IF NOT EXISTS idx_machine_mind_events_importance
     ON machine_mind_events(forgotten,importance DESC,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_machine_mind_belief_history_subject
     ON machine_mind_belief_history(subject,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_machine_mind_learning_subject
+    ON machine_mind_learning_log(subject,created_at DESC);
 """
 
 def configured() -> bool:
@@ -169,12 +185,108 @@ def reinforce_semantic(concept_key: str, summary: dict[str, Any], confidence: fl
             ON CONFLICT(concept_key) DO UPDATE SET
               summary_json=EXCLUDED.summary_json,
               support_count=machine_mind_semantic_memory.support_count+1,
-              confidence=GREATEST(machine_mind_semantic_memory.confidence*0.8,EXCLUDED.confidence),
+              confidence=EXCLUDED.confidence,
               last_reinforced_at=now(),
               updated_at=now()
             """,
             (concept_key, Jsonb(summary), float(confidence)),
         )
+
+def recall(subject: str, payload: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+    conn=connect()
+    if conn is None:
+        return []
+    lim=max(1,min(int(limit),50))
+    terms=[str(subject).strip()]
+    for key in ("label","data_type","category","entity_id","object_id"):
+        value=payload.get(key)
+        if value is not None and str(value).strip():
+            terms.append(str(value).strip())
+    terms=list(dict.fromkeys(t for t in terms if t))
+    with conn:
+        exact=conn.execute(
+            """
+            SELECT 'semantic' AS memory_type, concept_key AS memory_key,
+                   summary_json AS memory_json, confidence, support_count,
+                   updated_at AS memory_time
+            FROM machine_mind_semantic_memory
+            WHERE concept_key=%s
+            LIMIT 1
+            """,(subject,)
+        ).fetchall()
+        pattern="|" .join(terms)
+        related=[]
+        if pattern:
+            related=conn.execute(
+                """
+                SELECT 'episodic' AS memory_type, event_id AS memory_key,
+                       event_json AS memory_json, importance AS confidence,
+                       1::bigint AS support_count, created_at AS memory_time
+                FROM machine_mind_events
+                WHERE forgotten=false
+                  AND (payload_json::text ILIKE ANY(%s))
+                ORDER BY importance DESC, created_at DESC
+                LIMIT %s
+                """,
+                ([f"%{t}%" for t in terms],lim),
+            ).fetchall()
+    seen=set()
+    result=[]
+    for row in list(exact)+list(related):
+        key=(row["memory_type"],row["memory_key"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(row)
+        if len(result)>=lim:
+            break
+    return result
+
+def save_learning(event_id: str | None, subject: str, raw_confidence: float, revised_confidence: float, learning: dict[str, Any]) -> None:
+    conn=connect()
+    if conn is None:
+        return
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO machine_mind_learning_log(
+                event_id,subject,recalled_count,contradiction_count,support_count,
+                raw_confidence,revised_confidence,learning_json
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                event_id,subject,
+                int(learning.get("recalled_count",0)),
+                int(learning.get("contradiction_count",0)),
+                int(learning.get("support_count",0)),
+                float(raw_confidence),float(revised_confidence),
+                Jsonb(learning),
+            ),
+        )
+
+def learning_history(subject: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    conn=connect()
+    if conn is None:
+        return []
+    lim=max(1,min(int(limit),1000))
+    with conn:
+        if subject:
+            return conn.execute(
+                """
+                SELECT event_id,subject,recalled_count,contradiction_count,support_count,
+                       raw_confidence,revised_confidence,learning_json,created_at
+                FROM machine_mind_learning_log
+                WHERE subject=%s ORDER BY created_at DESC LIMIT %s
+                """,(subject,lim)
+            ).fetchall()
+        return conn.execute(
+            """
+            SELECT event_id,subject,recalled_count,contradiction_count,support_count,
+                   raw_confidence,revised_confidence,learning_json,created_at
+            FROM machine_mind_learning_log
+            ORDER BY created_at DESC LIMIT %s
+            """,(lim,)
+        ).fetchall()
 
 def recent_events(limit: int = 100, include_forgotten: bool = False) -> list[dict[str, Any]]:
     conn = connect()
