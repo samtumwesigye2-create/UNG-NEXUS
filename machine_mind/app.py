@@ -5,8 +5,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel,Field
 from runtime import MachineMindRuntime
 import storage
+import lab
 
-app=FastAPI(title="Machine Mind",version="1.8.0")
+app=FastAPI(title="Machine Mind",version="1.9.0")
 mind=MachineMindRuntime()
 
 class NexusEnvelope(BaseModel):
@@ -20,7 +21,7 @@ class RecallIn(BaseModel):
     subject:str;payload:dict[str,Any]=Field(default_factory=dict);limit:int=12
 
 @app.get("/")
-def root():return {"service":"MACHINE-MIND","status":"online","version":"1.8.0","persistent":mind.persistence_ready}
+def root():return {"service":"MACHINE-MIND","status":"online","version":"1.9.0","persistent":mind.persistence_ready}
 @app.get("/health")
 def health():return {"status":"ok","service":"MACHINE-MIND","cycle":mind.state.cycle,"persistent":mind.persistence_ready}
 @app.get("/ready")
@@ -46,6 +47,14 @@ def inquiries(limit:int=100):return storage.inquiries(limit) if mind.persistence
 def actions(limit:int=100):return storage.actions(limit) if mind.persistence_ready else ([mind.last_action] if mind.last_action else [])
 @app.get("/mind/affect")
 def affect(limit:int=100):return storage.recent_affect(limit) if mind.persistence_ready else [{"cycle":mind.state.cycle,"affect_json":mind.affect}]
+@app.get("/mind/workspace")
+def workspace():return {"focus":mind.workspace.focus,"broadcast":mind.workspace.broadcast}
+@app.get("/mind/self-model")
+def self_model():return mind.last_self_report or mind.self_model.update(mind.state.confidence,0,None)
+@app.post("/mind/lab/run")
+def lab_run():return lab.run_suite(mind)
+@app.get("/mind/lab/ablation/{layer}")
+def lab_ablation(layer:str):return lab.ablation(mind,layer)
 @app.get("/mind/state")
 def state():return mind.state.view()
 @app.get("/mind/goals")
