@@ -70,7 +70,7 @@ async def internal_auth(request:Request,call_next):
     if path.startswith("/mind/") or path=="/v1/nexus/inbound":
         auth=request.headers.get("authorization")
         try:
-            require_service(auth)
+            require_service(auth,request.headers.get("host"))
         except HTTPException as exc:
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=exc.status_code,content={"detail":exc.detail})
