@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from runtime import MachineMindRuntime
 import storage
 
-app=FastAPI(title="Machine Mind",version="1.5.0")
+app=FastAPI(title="Machine Mind",version="1.6.0")
 mind=MachineMindRuntime()
 
 class NexusEnvelope(BaseModel):
@@ -28,8 +28,13 @@ class EventIn(BaseModel):
     confidence:Optional[float]=None
     correlation_id:Optional[str]=None
 
+class RecallIn(BaseModel):
+    subject:str
+    payload:dict[str,Any]=Field(default_factory=dict)
+    limit:int=12
+
 @app.get("/")
-def root(): return {"service":"MACHINE-MIND","status":"online","version":"1.5.0","persistent":mind.persistence_ready}
+def root(): return {"service":"MACHINE-MIND","status":"online","version":"1.6.0","persistent":mind.persistence_ready}
 
 @app.get("/health")
 def health(): return {"status":"ok","service":"MACHINE-MIND","cycle":mind.state.cycle,"persistent":mind.persistence_ready}
@@ -54,6 +59,14 @@ def perception(evt:EventIn):
 @app.post("/mind/evidence")
 def evidence(evt:EventIn):
     evt.event_type="evidence.update"; return mind_event(evt)
+
+@app.post("/mind/recall")
+def recall(body:RecallIn):
+    return {"subject":body.subject,"memories":mind.recall(body.subject,body.payload,body.limit)}
+
+@app.get("/mind/learning")
+def learning(subject:str|None=None,limit:int=100):
+    return storage.learning_history(subject,limit) if mind.persistence_ready else []
 
 @app.get("/mind/state")
 def state(): return mind.state.view()
