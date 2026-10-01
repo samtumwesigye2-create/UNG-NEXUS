@@ -10,7 +10,7 @@ CLAIM_KEYS=("value","status","state","classification","result","present","active
 class MachineMindRuntime:
     def __init__(self):
         self.state=MindState();self.events=deque(maxlen=5000);self.beliefs={};self.goals=[]
-        self.persistence_ready=False;self.last_recall={};self.last_hypotheses=[];self.restore()
+        self.persistence_ready=False;self.last_recall={};self.last_hypotheses=[];self.affect={};self.last_inquiry=None;self.last_action=None;self.restore()
 
     def restore(self):
         try:
@@ -96,6 +96,60 @@ class MachineMindRuntime:
         if self.persistence_ready:storage.replace_hypotheses(subject,hypotheses)
         return hypotheses
 
+    def update_affect(self,learning,confidence,importance):
+        contradictions=int(learning.get("contradiction_count",0))
+        novelty=1.0 if int(learning.get("recalled_count",0))==0 else 0.25
+        self.affect={
+            "curiosity":round(max(0.0,min(1.0,0.45*self.state.uncertainty+0.35*novelty+0.20*contradictions)),4),
+            "urgency":round(max(0.0,min(1.0,importance*(0.7+0.3*contradictions))),4),
+            "frustration":round(max(0.0,min(1.0,0.25*contradictions+0.35*self.state.uncertainty)),4),
+            "satisfaction":round(max(0.0,min(1.0,confidence*(1.0-min(1.0,0.35*contradictions)))),4),
+            "trust":round(max(0.0,min(1.0,confidence*(1.0-0.25*contradictions))),4),
+            "goal_pressure":round(max(0.0,min(1.0,self.state.uncertainty+0.15*contradictions)),4),
+        }
+        if self.persistence_ready:
+            storage.save_affect(self.state.cycle,self.affect)
+        return self.affect
+
+    def plan_inquiry(self,subject,hypotheses):
+        if not hypotheses:return None
+        request=hypotheses[0].get("next_observation") or {}
+        text=str(request.get("request") or "")
+        target="UNG-HEPHA"
+        low=text.lower()
+        if "plan" in low or "simulate" in low:target="UNG-APOLLO"
+        elif "analytic" in low or "classif" in low:target="UNG-NOVA"
+        elif "aerial" in low or "drone" in low or "overhead" in low:target="UNG-HORUS"
+        inquiry={"inquiry_id":str(uuid.uuid4()),"subject":subject,"target_system":target,
+                 "request":request,"status":"planned","reason":"reduce uncertainty / discriminate hypotheses"}
+        self.last_inquiry=inquiry
+        if self.persistence_ready:storage.save_inquiry(inquiry)
+        return inquiry
+
+    def update_agency(self,event):
+        et=str(event.get("event_type") or "")
+        p=dict(event.get("payload") or {})
+        if et=="action.intent":
+            action={"action_id":str(p.get("action_id") or event.get("event_id") or uuid.uuid4()),
+                    "subject":str(p.get("subject") or p.get("action") or "action"),
+                    "intended":p,"observed":None,"prediction_error":None,"status":"intended"}
+            self.last_action=action
+            if self.persistence_ready:storage.save_action(action)
+            return action
+        if et=="action.result":
+            intended=dict(p.get("intended") or {})
+            observed=dict(p.get("observed") or p)
+            keys=set(intended).intersection(observed)
+            mismatch=sum(1 for k in keys if str(intended.get(k))!=str(observed.get(k)))
+            error=(mismatch/max(1,len(keys))) if keys else 0.0
+            action={"action_id":str(p.get("action_id") or event.get("correlation_id") or event.get("event_id") or uuid.uuid4()),
+                    "subject":str(p.get("subject") or p.get("action") or "action"),
+                    "intended":intended,"observed":observed,"prediction_error":round(error,4),"status":"observed"}
+            self.last_action=action
+            if self.persistence_ready:storage.save_action(action)
+            return action
+        return None
+
     def persist(self,event,importance,belief=None,learning=None):
         if not self.persistence_ready:return
         try:
@@ -123,6 +177,8 @@ class MachineMindRuntime:
             belief={"subject":label,"event_type":et,"confidence":confidence,"raw_confidence":raw,"payload":payload,"source_system":event.get("source_system"),"learning":learning}
             self.beliefs[label]=belief
         hypotheses=self.generate_hypotheses(label,payload,confidence,learning)
+        inquiry=self.plan_inquiry(label,hypotheses) if (learning["contradiction_count"]>0 or self.state.uncertainty>0.35) else None
+        agency=self.update_agency(event)
         if learning["contradiction_count"]>0:goal="Resolve contradictory evidence before increasing commitment."
         elif self.state.uncertainty>0.45:goal="Reduce uncertainty with additional evidence."
         elif "anomaly" in et:goal="Investigate the detected anomaly."
@@ -131,13 +187,13 @@ class MachineMindRuntime:
         self.state.narrative=f"Cycle {self.state.cycle}: {self.state.thought} Raw={raw:.2f}; revised={confidence:.2f}; support={learning['support_count']}; contradictions={learning['contradiction_count']}; goal={goal}"
         self.events.append(event)
         if not self.goals or self.goals[0]["description"]!=goal:self.goals.insert(0,{"description":goal,"priority":1.0-self.state.uncertainty/2});self.goals=self.goals[:100]
-        importance=self.score_importance(event,confidence);self.persist(event,importance,belief,learning)
+        importance=self.score_importance(event,confidence);affect=self.update_affect(learning,confidence,importance);self.persist(event,importance,belief,learning)
         print(f"MACHINE_MIND_HYPOTHESES subject={label} count={len(hypotheses)} top={hypotheses[0]['probability']:.2f}",flush=True)
-        return {"accepted":True,"cycle":self.state.cycle,"thought":self.state.thought,"goal":self.state.goal,"belief_count":len(self.beliefs),"importance":importance,"persistent":self.persistence_ready,"learning":learning,"hypotheses":hypotheses}
+        return {"accepted":True,"cycle":self.state.cycle,"thought":self.state.thought,"goal":self.state.goal,"belief_count":len(self.beliefs),"importance":importance,"persistent":self.persistence_ready,"learning":learning,"hypotheses":hypotheses,"inquiry":inquiry,"agency":agency,"affect":affect}
 
     def recall(self,subject,payload=None,limit=12):return storage.recall(subject,payload or {},limit) if self.persistence_ready else []
     def get_hypotheses(self,subject=None,limit=100):return storage.hypotheses(subject,limit) if self.persistence_ready else self.last_hypotheses[:limit]
     def consolidate(self):
         result=storage.apply_forgetting() if self.persistence_ready else {"forgotten":0}
         return {"persistent":self.persistence_ready,**result,"semantic_count":len(storage.semantic_memories(1000)) if self.persistence_ready else 0}
-    def snapshot(self):return {"state":self.state.view(),"beliefs":list(self.beliefs.values()),"goals":self.goals,"event_count":len(self.events),"persistent":self.persistence_ready,"last_recall":self.last_recall,"last_hypotheses":self.last_hypotheses}
+    def snapshot(self):return {"state":self.state.view(),"beliefs":list(self.beliefs.values()),"goals":self.goals,"event_count":len(self.events),"persistent":self.persistence_ready,"last_recall":self.last_recall,"last_hypotheses":self.last_hypotheses,"affect":self.affect,"last_inquiry":self.last_inquiry,"last_action":self.last_action}
