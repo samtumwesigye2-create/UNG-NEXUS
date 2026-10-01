@@ -6,7 +6,7 @@ from pydantic import BaseModel,Field
 from runtime import MachineMindRuntime
 import storage
 
-app=FastAPI(title="Machine Mind",version="1.7.0")
+app=FastAPI(title="Machine Mind",version="1.8.0")
 mind=MachineMindRuntime()
 
 class NexusEnvelope(BaseModel):
@@ -20,7 +20,7 @@ class RecallIn(BaseModel):
     subject:str;payload:dict[str,Any]=Field(default_factory=dict);limit:int=12
 
 @app.get("/")
-def root():return {"service":"MACHINE-MIND","status":"online","version":"1.7.0","persistent":mind.persistence_ready}
+def root():return {"service":"MACHINE-MIND","status":"online","version":"1.8.0","persistent":mind.persistence_ready}
 @app.get("/health")
 def health():return {"status":"ok","service":"MACHINE-MIND","cycle":mind.state.cycle,"persistent":mind.persistence_ready}
 @app.get("/ready")
@@ -40,6 +40,12 @@ def recall(body:RecallIn):return {"subject":body.subject,"memories":mind.recall(
 def learning(subject:str|None=None,limit:int=100):return storage.learning_history(subject,limit) if mind.persistence_ready else []
 @app.get("/mind/hypotheses")
 def hypotheses(subject:str|None=None,limit:int=100):return mind.get_hypotheses(subject,limit)
+@app.get("/mind/inquiries")
+def inquiries(limit:int=100):return storage.inquiries(limit) if mind.persistence_ready else ([mind.last_inquiry] if mind.last_inquiry else [])
+@app.get("/mind/actions")
+def actions(limit:int=100):return storage.actions(limit) if mind.persistence_ready else ([mind.last_action] if mind.last_action else [])
+@app.get("/mind/affect")
+def affect(limit:int=100):return storage.recent_affect(limit) if mind.persistence_ready else [{"cycle":mind.state.cycle,"affect_json":mind.affect}]
 @app.get("/mind/state")
 def state():return mind.state.view()
 @app.get("/mind/goals")
