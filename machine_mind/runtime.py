@@ -49,6 +49,7 @@ class MachineMindRuntime:
             f"Confidence={self.state.confidence:.2f}; goal={goal}"
         )
         self.events.append(event)
+        print(f"MACHINE_MIND_EVENT source={event.get('source_system')} type={et} label={label} cycle={self.state.cycle}", flush=True)
         if not self.goals or self.goals[0]["description"] != goal:
             self.goals.insert(0, {"description":goal,"priority":1.0-self.state.uncertainty/2})
             self.goals = self.goals[:100]
