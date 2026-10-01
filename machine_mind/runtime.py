@@ -4,13 +4,14 @@ from typing import Any
 from state import MindState
 import storage
 import uuid
+from cognitive_layers import GlobalWorkspace, SelfModel
 
 CLAIM_KEYS=("value","status","state","classification","result","present","active")
 
 class MachineMindRuntime:
     def __init__(self):
         self.state=MindState();self.events=deque(maxlen=5000);self.beliefs={};self.goals=[]
-        self.persistence_ready=False;self.last_recall={};self.last_hypotheses=[];self.affect={};self.last_inquiry=None;self.last_action=None;self.restore()
+        self.persistence_ready=False;self.last_recall={};self.last_hypotheses=[];self.affect={};self.last_inquiry=None;self.last_action=None;self.workspace=GlobalWorkspace();self.self_model=SelfModel();self.last_self_report={};self.restore()
 
     def restore(self):
         try:
@@ -187,13 +188,19 @@ class MachineMindRuntime:
         self.state.narrative=f"Cycle {self.state.cycle}: {self.state.thought} Raw={raw:.2f}; revised={confidence:.2f}; support={learning['support_count']}; contradictions={learning['contradiction_count']}; goal={goal}"
         self.events.append(event)
         if not self.goals or self.goals[0]["description"]!=goal:self.goals.insert(0,{"description":goal,"priority":1.0-self.state.uncertainty/2});self.goals=self.goals[:100]
-        importance=self.score_importance(event,confidence);affect=self.update_affect(learning,confidence,importance);self.persist(event,importance,belief,learning)
+        importance=self.score_importance(event,confidence)
+        affect=self.update_affect(learning,confidence,importance)
+        workspace=self.workspace.select(subject=label,importance=importance,uncertainty=self.state.uncertainty,affect=affect,hypotheses=hypotheses,goal=goal)
+        prediction_error=(agency or {}).get("prediction_error") if agency else None
+        self_report=self.self_model.update(confidence,learning["contradiction_count"],prediction_error)
+        self.last_self_report=self_report
+        self.persist(event,importance,belief,learning)
         print(f"MACHINE_MIND_HYPOTHESES subject={label} count={len(hypotheses)} top={hypotheses[0]['probability']:.2f}",flush=True)
-        return {"accepted":True,"cycle":self.state.cycle,"thought":self.state.thought,"goal":self.state.goal,"belief_count":len(self.beliefs),"importance":importance,"persistent":self.persistence_ready,"learning":learning,"hypotheses":hypotheses,"inquiry":inquiry,"agency":agency,"affect":affect}
+        return {"accepted":True,"cycle":self.state.cycle,"thought":self.state.thought,"goal":self.state.goal,"belief_count":len(self.beliefs),"importance":importance,"persistent":self.persistence_ready,"learning":learning,"hypotheses":hypotheses,"inquiry":inquiry,"agency":agency,"affect":affect,"workspace":workspace,"self_model":self_report}
 
     def recall(self,subject,payload=None,limit=12):return storage.recall(subject,payload or {},limit) if self.persistence_ready else []
     def get_hypotheses(self,subject=None,limit=100):return storage.hypotheses(subject,limit) if self.persistence_ready else self.last_hypotheses[:limit]
     def consolidate(self):
         result=storage.apply_forgetting() if self.persistence_ready else {"forgotten":0}
         return {"persistent":self.persistence_ready,**result,"semantic_count":len(storage.semantic_memories(1000)) if self.persistence_ready else 0}
-    def snapshot(self):return {"state":self.state.view(),"beliefs":list(self.beliefs.values()),"goals":self.goals,"event_count":len(self.events),"persistent":self.persistence_ready,"last_recall":self.last_recall,"last_hypotheses":self.last_hypotheses,"affect":self.affect,"last_inquiry":self.last_inquiry,"last_action":self.last_action}
+    def snapshot(self):return {"state":self.state.view(),"beliefs":list(self.beliefs.values()),"goals":self.goals,"event_count":len(self.events),"persistent":self.persistence_ready,"last_recall":self.last_recall,"last_hypotheses":self.last_hypotheses,"affect":self.affect,"last_inquiry":self.last_inquiry,"last_action":self.last_action,"workspace":self.workspace.focus,"workspace_broadcast":self.workspace.broadcast,"self_model":self.last_self_report}
