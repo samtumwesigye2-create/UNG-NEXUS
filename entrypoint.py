@@ -42,12 +42,14 @@ app.include_router(acceptance_router)
 
 MIDAS_BASE_URL=os.getenv('MIDAS_BASE_URL','').rstrip('/')
 VECTOR_BASE_URL=os.getenv('VECTOR_BASE_URL','').rstrip('/')
+MACHINE_MIND_BASE_URL=os.getenv('MACHINE_MIND_BASE_URL','').rstrip('/')
 
 @app.on_event('startup')
 def register_core_routes():
     routes=[]
     if MIDAS_BASE_URL: routes.append(('UNG-MIDAS',MIDAS_BASE_URL+'/v1/nexus/inbound','UNG-MIDAS'))
     if VECTOR_BASE_URL: routes.append(('UNG-VECTOR',VECTOR_BASE_URL+'/v1/nexus/inbound','UNG-VECTOR'))
+    if MACHINE_MIND_BASE_URL: routes.append(('MACHINE-MIND',MACHINE_MIND_BASE_URL+'/v1/nexus/inbound','MACHINE-MIND'))
     if not routes:return
     with nexus.conn() as c:
         for name,url,system_id in routes:
