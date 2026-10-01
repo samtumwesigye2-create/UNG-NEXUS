@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 from state import MindState
+import storage
 
 class MachineMindRuntime:
     def __init__(self):
@@ -9,6 +10,53 @@ class MachineMindRuntime:
         self.events = deque(maxlen=5000)
         self.beliefs: dict[str, dict[str, Any]] = {}
         self.goals: list[dict[str, Any]] = []
+        self.persistence_ready = False
+        self.restore()
+
+    def restore(self):
+        try:
+            self.persistence_ready = storage.init_schema()
+            snap = storage.load_snapshot(self.state.identity) if self.persistence_ready else None
+            if snap:
+                saved = dict(snap.get("state_json") or {})
+                for field in (
+                    "identity","cycle","thought","goal","narrative",
+                    "confidence","uncertainty","last_event_at"
+                ):
+                    if field in saved:
+                        setattr(self.state, field, saved[field])
+                self.state.cycle = int(snap.get("cycle") or self.state.cycle)
+                self.beliefs = {
+                    str(x.get("subject", i)): x
+                    for i, x in enumerate(snap.get("beliefs_json") or [])
+                }
+                self.goals = list(snap.get("goals_json") or [])
+                for event in storage.recent_events(5000):
+                    self.events.append(event)
+                print(
+                    f"MACHINE_MIND_RESTORED cycle={self.state.cycle} "
+                    f"beliefs={len(self.beliefs)} goals={len(self.goals)} events={len(self.events)}",
+                    flush=True,
+                )
+        except Exception as exc:
+            self.persistence_ready = False
+            print(f"MACHINE_MIND_PERSISTENCE_RESTORE_ERROR {type(exc).__name__}", flush=True)
+
+    def persist(self, event: dict[str, Any]):
+        if not self.persistence_ready:
+            return
+        try:
+            storage.save_event(event)
+            storage.save_snapshot(
+                self.state.identity,
+                self.state.cycle,
+                self.state.view(),
+                list(self.beliefs.values()),
+                self.goals,
+            )
+        except Exception as exc:
+            self.persistence_ready = False
+            print(f"MACHINE_MIND_PERSISTENCE_WRITE_ERROR {type(exc).__name__}", flush=True)
 
     def ingest(self, event: dict[str, Any]) -> dict[str, Any]:
         self.state.cycle += 1
@@ -49,16 +97,25 @@ class MachineMindRuntime:
             f"Confidence={self.state.confidence:.2f}; goal={goal}"
         )
         self.events.append(event)
-        print(f"MACHINE_MIND_EVENT source={event.get('source_system')} type={et} label={label} cycle={self.state.cycle}", flush=True)
         if not self.goals or self.goals[0]["description"] != goal:
             self.goals.insert(0, {"description":goal,"priority":1.0-self.state.uncertainty/2})
             self.goals = self.goals[:100]
+
+        self.persist(event)
+
+        print(
+            f"MACHINE_MIND_EVENT source={event.get('source_system')} "
+            f"type={et} label={label} cycle={self.state.cycle} "
+            f"persistent={self.persistence_ready}",
+            flush=True,
+        )
         return {
             "accepted": True,
             "cycle": self.state.cycle,
             "thought": self.state.thought,
             "goal": self.state.goal,
             "belief_count": len(self.beliefs),
+            "persistent": self.persistence_ready,
         }
 
     def snapshot(self):
@@ -67,4 +124,5 @@ class MachineMindRuntime:
             "beliefs": list(self.beliefs.values()),
             "goals": self.goals,
             "event_count": len(self.events),
+            "persistent": self.persistence_ready,
         }
