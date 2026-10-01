@@ -117,6 +117,10 @@ def route_message(b:MessageIn,authorization:str|None=Header(None)):
  if b.target_system.startswith('GOU-'):
   if not GOVBRIDGE_BASE_URL:status='unroutable';attempts=0;code=None;error='govbridge_not_configured';delivered_at=None
   else:ok,attempts,code,error=deliver(GOVBRIDGE_BASE_URL+'/v1/bridge',d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
+ elif b.target_system=='MACHINE-MIND':
+  with conn() as c:target=c.execute('SELECT * FROM nexus_endpoints WHERE system_id=%s AND enabled=true ORDER BY created_at DESC LIMIT 1',(b.target_system,)).fetchone()
+  if not target:status='unroutable';attempts=0;code=None;error='no_enabled_endpoint';delivered_at=None
+  else:ok,attempts,code,error=deliver(target['base_url'],d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
  elif PULSAR_BASE_URL:
   ok,attempts,code,error,result=relay_to_pulsar(d,authorization);status='relayed' if ok else 'failed';delivered_at=utcnow() if ok else None
  else:
