@@ -2,13 +2,15 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, HttpUrl
 from uuid import uuid4
 from datetime import datetime, timezone
-import json, os, time, psycopg, urllib.error, urllib.request
+import json, os, time, psycopg, urllib.error, urllib.request, hmac
 from psycopg.rows import dict_row
 from interop import NexusEnvelope, connectors
 from pulsar_transport import relay as relay_to_pulsar
-app=FastAPI(title='UNG-NEXUS',version='0.6.1');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');GOVBRIDGE_BASE_URL=os.getenv('GOVBRIDGE_BASE_URL','').rstrip('/');DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
+app=FastAPI(title='UNG-NEXUS',version='0.6.2');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');GOVBRIDGE_BASE_URL=os.getenv('GOVBRIDGE_BASE_URL','').rstrip('/');INTERNAL_SERVICE_TOKEN=os.getenv('NEXUS_INTERNAL_SERVICE_TOKEN','').strip();DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 def auth(permission,authorization):
  if not authorization or not authorization.lower().startswith('bearer '):raise HTTPException(401,'JANUS bearer token required')
+ token=authorization.split(' ',1)[1].strip()
+ if INTERNAL_SERVICE_TOKEN and hmac.compare_digest(token,INTERNAL_SERVICE_TOKEN):return {'id':'internal-service','permissions':['platform:service'],'auth_source':'nexus-internal-service-token'}
  req=urllib.request.Request(JANUS_BASE_URL+'/v1/auth/introspect',data=b'',method='POST',headers={'Authorization':authorization,'User-Agent':'UNG-NEXUS/0.6.0'})
  try:
   with urllib.request.urlopen(req,timeout=5) as r:data=json.loads(r.read().decode())
