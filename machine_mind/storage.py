@@ -90,6 +90,32 @@ CREATE INDEX IF NOT EXISTS idx_machine_mind_events_importance ON machine_mind_ev
 CREATE INDEX IF NOT EXISTS idx_machine_mind_belief_history_subject ON machine_mind_belief_history(subject,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_machine_mind_learning_subject ON machine_mind_learning_log(subject,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_machine_mind_hypotheses_subject ON machine_mind_hypotheses(subject,status,probability DESC);
+
+CREATE TABLE IF NOT EXISTS machine_mind_inquiries (
+    inquiry_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    target_system TEXT NOT NULL,
+    request_json JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planned',
+    response_json JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS machine_mind_actions (
+    action_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    intended_json JSONB NOT NULL,
+    observed_json JSONB,
+    prediction_error DOUBLE PRECISION,
+    status TEXT NOT NULL DEFAULT 'intended',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS machine_mind_affect (
+    cycle BIGINT PRIMARY KEY,
+    affect_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 def configured() -> bool:
@@ -299,3 +325,49 @@ def health():
         return {"configured":True,"ready":True,"database_time":str(row["now"])}
     except Exception as exc:
         return {"configured":True,"ready":False,"error":type(exc).__name__}
+
+
+def save_inquiry(inquiry):
+    conn=connect()
+    if conn is None:return
+    with conn:
+        conn.execute("""INSERT INTO machine_mind_inquiries(inquiry_id,subject,target_system,request_json,status)
+        VALUES(%s,%s,%s,%s,%s)
+        ON CONFLICT(inquiry_id) DO UPDATE SET request_json=EXCLUDED.request_json,status=EXCLUDED.status,updated_at=now()""",
+        (inquiry["inquiry_id"],inquiry["subject"],inquiry["target_system"],Jsonb(inquiry),inquiry.get("status","planned")))
+
+def inquiries(limit=100):
+    conn=connect()
+    if conn is None:return []
+    with conn:
+        return conn.execute("""SELECT inquiry_id,subject,target_system,request_json,status,response_json,created_at,updated_at
+        FROM machine_mind_inquiries ORDER BY created_at DESC LIMIT %s""",(max(1,min(int(limit),1000)),)).fetchall()
+
+def save_action(action):
+    conn=connect()
+    if conn is None:return
+    with conn:
+        conn.execute("""INSERT INTO machine_mind_actions(action_id,subject,intended_json,observed_json,prediction_error,status)
+        VALUES(%s,%s,%s,%s,%s,%s)
+        ON CONFLICT(action_id) DO UPDATE SET observed_json=EXCLUDED.observed_json,prediction_error=EXCLUDED.prediction_error,status=EXCLUDED.status,updated_at=now()""",
+        (action["action_id"],action["subject"],Jsonb(action.get("intended") or {}),Jsonb(action.get("observed")) if action.get("observed") is not None else None,action.get("prediction_error"),action.get("status","intended")))
+
+def actions(limit=100):
+    conn=connect()
+    if conn is None:return []
+    with conn:
+        return conn.execute("""SELECT action_id,subject,intended_json,observed_json,prediction_error,status,created_at,updated_at
+        FROM machine_mind_actions ORDER BY created_at DESC LIMIT %s""",(max(1,min(int(limit),1000)),)).fetchall()
+
+def save_affect(cycle,affect):
+    conn=connect()
+    if conn is None:return
+    with conn:
+        conn.execute("""INSERT INTO machine_mind_affect(cycle,affect_json) VALUES(%s,%s)
+        ON CONFLICT(cycle) DO UPDATE SET affect_json=EXCLUDED.affect_json""",(int(cycle),Jsonb(affect)))
+
+def recent_affect(limit=100):
+    conn=connect()
+    if conn is None:return []
+    with conn:
+        return conn.execute("""SELECT cycle,affect_json,created_at FROM machine_mind_affect ORDER BY cycle DESC LIMIT %s""",(max(1,min(int(limit),1000)),)).fetchall()
