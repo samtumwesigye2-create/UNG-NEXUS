@@ -4,8 +4,9 @@ from typing import Any, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from runtime import MachineMindRuntime
+import storage
 
-app = FastAPI(title="Machine Mind", version="1.3.1")
+app = FastAPI(title="Machine Mind", version="1.4.0")
 mind = MachineMindRuntime()
 
 class NexusEnvelope(BaseModel):
@@ -29,15 +30,31 @@ class EventIn(BaseModel):
 
 @app.get("/")
 def root():
-    return {"service":"MACHINE-MIND","status":"online","version":"1.3.1"}
+    return {
+        "service":"MACHINE-MIND",
+        "status":"online",
+        "version":"1.4.0",
+        "persistent":mind.persistence_ready,
+    }
 
 @app.get("/health")
 def health():
-    return {"status":"ok","service":"MACHINE-MIND","cycle":mind.state.cycle}
+    return {
+        "status":"ok",
+        "service":"MACHINE-MIND",
+        "cycle":mind.state.cycle,
+        "persistent":mind.persistence_ready,
+    }
 
 @app.get("/ready")
 def ready():
-    return {"status":"ready","service":"MACHINE-MIND","cycle":mind.state.cycle}
+    db=storage.health()
+    return {
+        "status":"ready" if db.get("ready") else "degraded",
+        "service":"MACHINE-MIND",
+        "cycle":mind.state.cycle,
+        "persistence":db,
+    }
 
 @app.post("/v1/nexus/inbound", status_code=202)
 def nexus_inbound(env: NexusEnvelope):
@@ -87,7 +104,24 @@ def beliefs():
 
 @app.get("/mind/events")
 def events(limit: int = 100):
+    if mind.persistence_ready:
+        return storage.recent_events(limit)
     return list(mind.events)[-max(1,min(limit,1000)):]
+
+@app.get("/mind/snapshot")
+def snapshot():
+    return mind.snapshot()
+
+@app.get("/mind/persistence")
+def persistence():
+    return {
+        "runtime_ready": mind.persistence_ready,
+        "database": storage.health(),
+        "cycle": mind.state.cycle,
+        "belief_count": len(mind.beliefs),
+        "goal_count": len(mind.goals),
+        "event_count": len(mind.events),
+    }
 
 @app.get("/mind/health")
 def mind_health():
