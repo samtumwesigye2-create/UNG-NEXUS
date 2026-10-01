@@ -116,6 +116,27 @@ CREATE TABLE IF NOT EXISTS machine_mind_affect (
     affect_json JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS machine_mind_processed_messages (
+    message_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    result_json JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS machine_mind_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    target_system TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    payload_json JSONB NOT NULL,
+    correlation_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_machine_mind_outbox_pending ON machine_mind_outbox(status,next_attempt_at,created_at);
 """
 
 def configured() -> bool:
@@ -371,3 +392,57 @@ def recent_affect(limit=100):
     if conn is None:return []
     with conn:
         return conn.execute("""SELECT cycle,affect_json,created_at FROM machine_mind_affect ORDER BY cycle DESC LIMIT %s""",(max(1,min(int(limit),1000)),)).fetchall()
+
+
+def begin_message(message_id):
+    conn=connect()
+    if conn is None:return True,None
+    with conn:
+        row=conn.execute("""INSERT INTO machine_mind_processed_messages(message_id,status)
+        VALUES(%s,'processing') ON CONFLICT(message_id) DO NOTHING RETURNING message_id""",(message_id,)).fetchone()
+        if row:return True,None
+        existing=conn.execute("SELECT status,result_json FROM machine_mind_processed_messages WHERE message_id=%s",(message_id,)).fetchone()
+        return False,existing
+
+def finish_message(message_id,result):
+    conn=connect()
+    if conn is None:return
+    with conn:
+        conn.execute("""UPDATE machine_mind_processed_messages SET status='done',result_json=%s,updated_at=now()
+        WHERE message_id=%s""",(Jsonb(result),message_id))
+
+def enqueue_outbox(outbox_id,target_system,message_type,payload,correlation_id=None):
+    conn=connect()
+    if conn is None:return
+    with conn:
+        conn.execute("""INSERT INTO machine_mind_outbox(outbox_id,target_system,message_type,payload_json,correlation_id)
+        VALUES(%s,%s,%s,%s,%s) ON CONFLICT(outbox_id) DO NOTHING""",
+        (outbox_id,target_system,message_type,Jsonb(payload),correlation_id))
+
+def pending_outbox(limit=20):
+    conn=connect()
+    if conn is None:return []
+    with conn:
+        return conn.execute("""SELECT outbox_id,target_system,message_type,payload_json,correlation_id,attempts
+        FROM machine_mind_outbox WHERE status='pending' AND next_attempt_at<=now()
+        ORDER BY created_at ASC LIMIT %s""",(max(1,min(int(limit),100)),)).fetchall()
+
+def mark_outbox(outbox_id,sent,error=None):
+    conn=connect()
+    if conn is None:return
+    with conn:
+        if sent:
+            conn.execute("""UPDATE machine_mind_outbox SET status='sent',attempts=attempts+1,last_error=NULL,updated_at=now()
+            WHERE outbox_id=%s""",(outbox_id,))
+        else:
+            conn.execute("""UPDATE machine_mind_outbox SET attempts=attempts+1,last_error=%s,
+            status=CASE WHEN attempts+1>=8 THEN 'dead' ELSE 'pending' END,
+            next_attempt_at=now() + (LEAST(300, power(2, LEAST(attempts+1,8))::int) * interval '1 second'),
+            updated_at=now() WHERE outbox_id=%s""",(error,outbox_id))
+
+def outbox_status(limit=100):
+    conn=connect()
+    if conn is None:return []
+    with conn:
+        return conn.execute("""SELECT outbox_id,target_system,message_type,correlation_id,status,attempts,last_error,next_attempt_at,created_at,updated_at
+        FROM machine_mind_outbox ORDER BY created_at DESC LIMIT %s""",(max(1,min(int(limit),1000)),)).fetchall()
