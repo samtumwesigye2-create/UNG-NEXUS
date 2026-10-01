@@ -126,7 +126,15 @@ class MachineMindRuntime:
         inquiry={"inquiry_id":str(uuid.uuid4()),"subject":subject,"target_system":target,
                  "request":request,"status":"planned","reason":"reduce uncertainty / discriminate hypotheses"}
         self.last_inquiry=inquiry
-        if self.persistence_ready:storage.save_inquiry(inquiry)
+        if self.persistence_ready:
+            storage.save_inquiry(inquiry)
+            storage.enqueue_outbox(
+                inquiry["inquiry_id"],
+                inquiry["target_system"],
+                "observation.request",
+                {"subject":subject,"request":request,"inquiry_id":inquiry["inquiry_id"]},
+                inquiry["inquiry_id"],
+            )
         return inquiry
 
     def update_agency(self,event):
@@ -189,6 +197,10 @@ class MachineMindRuntime:
         self.state.goal=goal;self.state.thought=f"Processed {et} concerning {label}; maintained {len(hypotheses)} hypotheses."
         self.state.narrative=f"Cycle {self.state.cycle}: {self.state.thought} Raw={raw:.2f}; revised={confidence:.2f}; support={learning['support_count']}; contradictions={learning['contradiction_count']}; goal={goal}"
         self.events.append(event)
+        try:
+            self.substrate.emit(str(event.get("source_system") or "unknown"),et,confidence,event.get("timestamp"))
+        except Exception:
+            pass
         if not self.goals or self.goals[0]["description"]!=goal:self.goals.insert(0,{"description":goal,"priority":1.0-self.state.uncertainty/2});self.goals=self.goals[:100]
         importance=self.score_importance(event,confidence)
         affect=self.update_affect(learning,confidence,importance)
@@ -205,4 +217,4 @@ class MachineMindRuntime:
     def consolidate(self):
         result=storage.apply_forgetting() if self.persistence_ready else {"forgotten":0}
         return {"persistent":self.persistence_ready,**result,"semantic_count":len(storage.semantic_memories(1000)) if self.persistence_ready else 0}
-    def snapshot(self):return {"state":self.state.view(),"beliefs":list(self.beliefs.values()),"goals":self.goals,"event_count":len(self.events),"persistent":self.persistence_ready,"last_recall":self.last_recall,"last_hypotheses":self.last_hypotheses,"affect":self.affect,"last_inquiry":self.last_inquiry,"last_action":self.last_action,"workspace":self.workspace.focus,"workspace_broadcast":self.workspace.broadcast,"self_model":self.last_self_report}
+    def snapshot(self):return {"state":self.state.view(),"beliefs":list(self.beliefs.values()),"goals":self.goals,"event_count":len(self.events),"persistent":self.persistence_ready,"last_recall":self.last_recall,"last_hypotheses":self.last_hypotheses,"affect":self.affect,"last_inquiry":self.last_inquiry,"last_action":self.last_action,"workspace":self.workspace.focus,"workspace_broadcast":self.workspace.broadcast,"self_model":self.last_self_report,"substrate":self.substrate.status(),"embodiment":self.embodiment.status()}
