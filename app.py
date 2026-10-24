@@ -6,7 +6,7 @@ import json, os, time, psycopg, urllib.error, urllib.request, hmac
 from psycopg.rows import dict_row
 from interop import NexusEnvelope, connectors
 from pulsar_transport import relay as relay_to_pulsar
-app=FastAPI(title='UNG-NEXUS',version='0.6.2');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');GOVBRIDGE_BASE_URL=os.getenv('GOVBRIDGE_BASE_URL','').rstrip('/');INTERNAL_SERVICE_TOKEN=os.getenv('NEXUS_INTERNAL_SERVICE_TOKEN','').strip();DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
+app=FastAPI(title='UNG-NEXUS',version='0.6.2');DB=os.getenv('DATABASE_URL','');JANUS_BASE_URL=os.getenv('JANUS_BASE_URL','https://ung-iam-production.up.railway.app').rstrip('/');APOLLO_BASE_URL=os.getenv('APOLLO_BASE_URL','').rstrip('/');PULSAR_BASE_URL=os.getenv('PULSAR_BASE_URL','').rstrip('/');GOVBRIDGE_BASE_URL=os.getenv('GOVBRIDGE_BASE_URL','').rstrip('/');INTERNAL_SERVICE_TOKEN=os.getenv('NEXUS_INTERNAL_SERVICE_TOKEN','').strip();MESH_SERVICE_TOKEN=os.getenv('MESH_SERVICE_TOKEN','').strip();DELIVERY_TIMEOUT=float(os.getenv('NEXUS_DELIVERY_TIMEOUT','8'));DELIVERY_RETRIES=max(1,min(5,int(os.getenv('NEXUS_DELIVERY_RETRIES','3'))))
 def auth(permission,authorization):
  if not authorization or not authorization.lower().startswith('bearer '):raise HTTPException(401,'JANUS bearer token required')
  token=authorization.split(' ',1)[1].strip()
@@ -117,10 +117,11 @@ def route_message(b:MessageIn,authorization:str|None=Header(None)):
  if b.target_system.startswith('GOU-'):
   if not GOVBRIDGE_BASE_URL:status='unroutable';attempts=0;code=None;error='govbridge_not_configured';delivered_at=None
   else:ok,attempts,code,error=deliver(GOVBRIDGE_BASE_URL+'/v1/bridge',d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
- elif b.target_system=='MACHINE-MIND':
+ elif b.target_system in ('MACHINE-MIND','UNG-MESH'):
   with conn() as c:target=c.execute('SELECT * FROM nexus_endpoints WHERE system_id=%s AND enabled=true ORDER BY created_at DESC LIMIT 1',(b.target_system,)).fetchone()
+  out_auth='Bearer '+MESH_SERVICE_TOKEN if b.target_system=='UNG-MESH' and MESH_SERVICE_TOKEN else authorization
   if not target:status='unroutable';attempts=0;code=None;error='no_enabled_endpoint';delivered_at=None
-  else:ok,attempts,code,error=deliver(target['base_url'],d,authorization);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
+  else:ok,attempts,code,error=deliver(target['base_url'],d,out_auth);status='delivered' if ok else 'failed';delivered_at=utcnow() if ok else None
  elif PULSAR_BASE_URL:
   ok,attempts,code,error,result=relay_to_pulsar(d,authorization);status='relayed' if ok else 'failed';delivered_at=utcnow() if ok else None
  else:

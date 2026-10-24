@@ -18,6 +18,9 @@ def janus_auth(permission, authorization):
     internal = os.getenv('NEXUS_INTERNAL_SERVICE_TOKEN','').strip()
     if internal and hmac.compare_digest(token, internal):
         return {'id':'internal-service','permissions':['platform:service',permission],'auth_source':'nexus-internal-service-token'}
+    mesh = os.getenv('MESH_SERVICE_TOKEN','').strip()
+    if mesh and hmac.compare_digest(token, mesh):
+        return {'id':'UNG-MESH','permissions':['nexus.messages.write'],'auth_source':'mesh-service-token'}
     req = urllib.request.Request(
         nexus.JANUS_BASE_URL + '/v1/auth/introspect',
         data=b'',
@@ -48,6 +51,7 @@ app.include_router(acceptance_router)
 MIDAS_BASE_URL=os.getenv('MIDAS_BASE_URL','').rstrip('/')
 VECTOR_BASE_URL=os.getenv('VECTOR_BASE_URL','').rstrip('/')
 MACHINE_MIND_BASE_URL=os.getenv('MACHINE_MIND_BASE_URL','').rstrip('/')
+MESH_BASE_URL=os.getenv('MESH_BASE_URL','').rstrip('/')
 
 def run_machine_mind_acceptance_probe():
     if not MACHINE_MIND_BASE_URL:
@@ -88,12 +92,45 @@ def run_machine_mind_acceptance_probe():
         pass
 
 
+def run_mesh_acceptance_probe():
+    token = os.getenv('MESH_SERVICE_TOKEN','').strip()
+    if not MESH_BASE_URL or not token:
+        return
+    code = None; status = "failed"; error = None
+    try:
+        req = urllib.request.Request(
+            MESH_BASE_URL + "/v1/nexus/inbound",
+            data=json.dumps({"source_system": "UNG-NEXUS", "target_system": "UNG-MESH", "message_type": "system.health",
+                             "payload": {"status": "acceptance-test", "source": "UNG-NEXUS"}}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "UNG-NEXUS/acceptance", "Authorization": "Bearer " + token},
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            code = int(response.status)
+            body = json.loads(response.read().decode() or "{}")
+            status = "passed" if 200 <= code < 300 and body.get("accepted") else "failed"
+    except urllib.error.HTTPError as exc:
+        code = int(exc.code); error = f"http_{exc.code}"
+    except Exception as exc:
+        error = type(exc).__name__
+    print(f"MESH_ACCEPTANCE status={status} code={code} error={error}")
+    try:
+        with nexus.conn() as db:
+            db.execute(
+                "INSERT INTO nexus_acceptance_checks(id,target_system,status,response_code,message_id,error,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                (str(uuid4()), "UNG-MESH", status, code, None, error, nexus.utcnow()),
+            )
+    except Exception:
+        pass
+
+
 @app.on_event('startup')
 def register_core_routes():
     routes=[]
     if MIDAS_BASE_URL: routes.append(('UNG-MIDAS',MIDAS_BASE_URL+'/v1/nexus/inbound','UNG-MIDAS'))
     if VECTOR_BASE_URL: routes.append(('UNG-VECTOR',VECTOR_BASE_URL+'/v1/nexus/inbound','UNG-VECTOR'))
     if MACHINE_MIND_BASE_URL: routes.append(('MACHINE-MIND',MACHINE_MIND_BASE_URL+'/v1/nexus/inbound','MACHINE-MIND'))
+    if MESH_BASE_URL: routes.append(('UNG-MESH',MESH_BASE_URL+'/v1/nexus/inbound','UNG-MESH'))
     if not routes:return
     with nexus.conn() as c:
         for name,url,system_id in routes:
@@ -102,3 +139,4 @@ def register_core_routes():
                          ON CONFLICT(name) DO UPDATE SET base_url=EXCLUDED.base_url,system_id=EXCLUDED.system_id,enabled=true''',
                       (str(uuid4()),name,url,system_id,nexus.utcnow()))
     run_machine_mind_acceptance_probe()
+    run_mesh_acceptance_probe()
